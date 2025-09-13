@@ -1,6 +1,67 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+# --- begin replay safety helpers ---
+from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
+
+def _et_window_to_utc(et_date_str: str, start_hhmm: str, end_hhmm: str):
+    # et_date_str like "2025-09-12"; hhmm like "09:30", "11:00"
+    et = ZoneInfo("America/New_York")
+    y,m,d = map(int, et_date_str.split("-"))
+    sh, sm = map(int, start_hhmm.split(":"))
+    eh, em = map(int, end_hhmm.split(":"))
+    start_et = datetime(y,m,d,sh,sm, tzinfo=et)
+    end_et   = datetime(y,m,d,eh,em, tzinfo=et)
+    return start_et.astimezone(timezone.utc), end_et.astimezone(timezone.utc)
+
+def _clamp_range(start_utc, end_utc, safety_min=10):
+    # Do not ask past "now - safety"
+    now_guard = datetime.now(timezone.utc) - timedelta(minutes=safety_min)
+    if end_utc > now_guard:
+        end_utc = now_guard
+    # Ensure start < end
+    if start_utc >= end_utc:
+        start_utc = end_utc - timedelta(minutes=1)
+    return start_utc, end_utc
+# --- end replay safety helpers ---
+
+# === SB clamp helpers (idempotent) ===
+from datetime import datetime, timezone, timedelta
+_SBW_CLAMP_HELPERS = True
+
+SAFETY_SECONDS = 60  # don’t query right up to "now"
+
+def _clamp_utc_range(start_utc, end_utc):
+    # Normalize Nones
+    if end_utc is None:
+        end_utc = datetime.now(timezone.utc) - timedelta(seconds=SAFETY_SECONDS)
+    if start_utc is None:
+        start_utc = end_utc - timedelta(hours=5)
+    # Fix inverted / zero width
+    if start_utc >= end_utc:
+        start_utc = end_utc - timedelta(hours=5)
+    return start_utc, end_utc
+
+def _get_range(client, start_utc=None, end_utc=None, **kw):
+    # Always clamp first
+    start_utc, end_utc = _clamp_utc_range(start_utc, end_utc)
+    try:
+        return _get_range(client, start=start_utc, end=end_utc, **kw)
+    except Exception as e:
+        msg = str(e)
+        # Heal only time-availability problems; anything else -> re-raise
+        if ("data_start_after_available_end" not in msg and
+            "data_end_after_available_end"   not in msg and
+            "Invalid time range query"       not in msg):
+            raise
+        # Back off end and ensure a sane window, then retry once
+        end2 = end_utc - timedelta(minutes=30)
+        if end2 <= start_utc:
+            start_utc = end2 - timedelta(hours=1)
+        return _get_range(client, start=start_utc, end=end2, **kw)
+# === end helpers ===
+
 import json
 import os
 from dataclasses import dataclass
@@ -101,6 +162,17 @@ def build_for_day(api: Historical, symbol: str, day_et: datetime) -> dict:
     return out
 
 def main():
+    # _BUILD_ET_WINDOW_BEGIN
+    import os
+    et_date = os.environ.get("REPLAY_ET_DATE")  # preferred for replay
+    if not et_date:
+        # default to "today" in ET
+        et = ZoneInfo("America/New_York")
+        et_date = datetime.now(et).strftime("%Y-%m-%d")
+    # Your analysis window: 09:30–11:00 ET
+    s_utc, e_utc = _et_window_to_utc(et_date, "09:30", "11:00")
+    s_utc, e_utc = _clamp_range(s_utc, e_utc, safety_min=10)
+    # _BUILD_ET_WINDOW_END
     symbol = os.environ.get("FRONT_SYMBOL") or "NQZ5"   # your front
     api_key = os.environ.get("DATABENTO_API_KEY") or ""
     if not api_key:
