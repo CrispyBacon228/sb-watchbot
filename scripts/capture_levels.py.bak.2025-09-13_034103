@@ -180,7 +180,7 @@ def build_levels_for_day(client, day_et):
     import pandas as pd
 
     # Session windows (ET)
-    asia_s, asia_e = make_utc_range(day_et - timedelta(days=1), "18:00", "00:00")
+    asia_s,   asia_e   = make_utc_range(day_et, "18:00", "00:00")
     london_s, london_e = make_utc_range(day_et, "02:00", "05:00")
     prev_s,   prev_e   = make_utc_range(day_et - timedelta(days=1), "09:30", "16:00")
 

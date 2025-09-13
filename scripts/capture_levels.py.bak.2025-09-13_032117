@@ -71,13 +71,6 @@ def clamp_end(end_utc) -> datetime:
     return min(end_utc, guard)
 
 def fetch_range(client, start_utc: datetime, end_utc: datetime):
-    # --- provider-edge guard to prevent 422 start>=end ---
-    _guard = datetime.now(timezone.utc) - timedelta(seconds=120)
-    if end_utc > _guard:
-        end_utc = _guard
-    if start_utc >= end_utc:
-        start_utc = end_utc - timedelta(minutes=1)
-    # ------------------------------------------------------
     """Fetch OHLCV via Databento HTTP Historical API with provider-edge guards."""
     import os
     # client
@@ -180,7 +173,7 @@ def build_levels_for_day(client, day_et):
     import pandas as pd
 
     # Session windows (ET)
-    asia_s, asia_e = make_utc_range(day_et - timedelta(days=1), "18:00", "00:00")
+    asia_s,   asia_e   = make_utc_range(day_et, "18:00", "00:00")
     london_s, london_e = make_utc_range(day_et, "02:00", "05:00")
     prev_s,   prev_e   = make_utc_range(day_et - timedelta(days=1), "09:30", "16:00")
 
@@ -243,8 +236,8 @@ def main():
 
     msg = (
         f"📈 SB Watchbot levels captured for {today_et}\n"
-        f"• Asia H/L: {(levels.get('asia') or levels.get('Asia') or levels.get('ASIA'))['high']} / {(levels.get('asia') or levels.get('Asia') or levels.get('ASIA'))['low']}\n"
-        f"• London H/L: {(levels.get('london') or levels.get('London') or levels.get('LONDON'))['high']} / {(levels.get('london') or levels.get('London') or levels.get('LONDON'))['low']}"
+        f"• Asia H/L: {levels['asia']['high']} / {levels['asia']['low']}\n"
+        f"• London H/L: {levels['london']['high']} / {levels['london']['low']}"
     )
     notify(msg)
     print("OK")
