@@ -1,2 +1,7 @@
-def is_sweep(prev_high: float, curr_high: float, tol: float = 0.25) -> bool:
-    return curr_high > prev_high and (curr_high - prev_high) <= tol
+from __future__ import annotations
+
+def swept_above(level: float, high: float, tol: float) -> bool:
+    return high >= level and (high - level) <= tol
+
+def swept_below(level: float, low: float, tol: float) -> bool:
+    return low <= level and (level - low) <= tol

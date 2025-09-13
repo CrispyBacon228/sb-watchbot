@@ -1,13 +1,29 @@
 symbol: "NQ"
-price_divisor: 1000000000
-schema: "ohlcv-1m"
 dataset: "GLBX.MDP3"
+schema: "ohlcv-1m"
+price_divisor: 1000000000
+
 sessions:
+  tz: "America/New_York"
   ny_open: "09:30"
   ny_killzone_start: "10:00"
   ny_killzone_end: "11:00"
+
 tolerances:
-  sweep_ticks: 1
+  sweep_ticks: 0.25             # was 1
+  fvg_min_ticks: 0.5
+  displacement_min_ticks: 2     # was 6
+  refill_tolerance_ticks: 0.25
+
+risk:
+  tp1_r_multiple: 1.0
+  tp2_r_multiple: 2.0
+  stop_buffer_ticks: 0.25
+
 cooldowns:
-  per_level_seconds: 300
-  global_seconds: 120
+  per_level_seconds: 600
+  global_seconds: 300
+
+references:
+  ref_lookback_minutes: 60      # rolling window when PDH/PDL not provided
+  require_fvg: false            # allow entry on displacement right after sweep
