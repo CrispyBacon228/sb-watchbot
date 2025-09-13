@@ -1,5 +1,32 @@
 #!/usr/bin/env python3
 from __future__ import annotations
+
+import pandas as _pd
+
+def _sort_by_ts(df):
+    """Return df sorted by UTC ts column, creating it if needed."""
+    if df is None or getattr(df, "empty", True):
+        return df
+    if "ts" in df.columns:
+        if not _pd.api.types.is_datetime64_any_dtype(df["ts"]):
+            df["ts"] = _pd.to_datetime(df["ts"], utc=True, errors="coerce")
+        return df.sort_values("ts")
+    if "ts_event" in df.columns:
+        df["ts"] = _pd.to_datetime(df["ts_event"], utc=True, errors="coerce")
+        return df.sort_values("ts")
+    if "ts_recv" in df.columns:
+        df["ts"] = _pd.to_datetime(df["ts_recv"], utc=True, errors="coerce")
+        return df.sort_values("ts")
+    # fallback: use index
+    if not df.index.name:
+        df = df.reset_index().rename(columns={"index": "ts"})
+    else:
+        df = df.reset_index().rename(columns={df.index.name: "ts"})
+    df["ts"] = _pd.to_datetime(df["ts"], utc=True, errors="coerce")
+    return df.sort_values("ts")
+import pandas as _pd
+
+
 import os, sys, importlib
 from pathlib import Path
 from datetime import datetime, date, time as dtime, timedelta, timezone
@@ -147,42 +174,20 @@ def main():
             df[c] = df[c] / DIVISOR
     if "ts" not in df.columns:
         df = df.reset_index().rename(columns={"ts_recv":"ts"})
-    df = df.sort_values("ts")
+    df = _ensure_ts_col(df); import pandas as _pd
+try:
+    import pandas as _pd
+except NameError:
+    # df not created yet; skip for now — later code can sort after fetch
+    pass
 
-    # Bind your strategy + alert functions
-    strat = _resolve_callable(STRATEGY_FQN)
-    alert = _resolve_callable(ALERT_FQN)
-
-    print("[replay] strategy: {}".format(STRATEGY_FQN or "NOT SET"))
-    print("[replay] alerts  : {}".format(ALERT_FQN or "NOT SET"))
-    if not strat or not alert:
-        print("[replay] Tip: set STRATEGY_FN and ALERT_FN env vars to your real functions.")
-        print("         e.g., export STRATEGY_FN=sbwatch.strategy.process_bar")
-        print("               export ALERT_FN=sbwatch.alerts.dispatch")
-
-    # Drive bars into your pipeline
-    for _, row in df.iterrows():
-        bar = _bar_from_row(row)
-        out = None
-        try:
-            if strat:
-                out = strat(bar)
-        except Exception as e:
-            print("[replay][strategy error] {}".format(e), file=sys.stderr)
-            continue
-
-        if out is None:
-            continue
-        if isinstance(out, (str, dict)):
-            out = [out]
-        if isinstance(out, list):
-            for item in out:
-                try:
-                    if alert:
-                        alert(item)
-                except Exception as e:
-                    print("[replay][alert error] {}".format(e), file=sys.stderr)
-                    print(item)
-
+# df already created abovedf = _sort_by_ts(df)
 if __name__ == "__main__":
     main()
+
+
+def _ensure_ts_col(df):
+    """Ensure df has a UTC datetime column named 'ts'. Returns mutated df."""
+    if df is None or getattr(df, "empty", True):
+        return df
+    # If ts already exists, try to ensure datetime

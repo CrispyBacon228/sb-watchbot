@@ -1,3 +1,11 @@
+import re
+from databento.common.error import BentoClientError
+from datetime import date, datetime, time, timedelta, timezone
+
+def _provider_guard_now():
+    """Return a UTC timestamp slightly behind live to avoid 422s."""
+    return datetime.now(timezone.utc) - timedelta(seconds=120)
+
 #!/usr/bin/env python3
 import os, json, sys, traceback
 
@@ -20,7 +28,6 @@ def make_utc_range(day_et: date, start_hhmm: str, end_hhmm: str, tz: str = "Amer
 
 from dataclasses import asdict
 from scripts.db_client import get_historical
-from datetime import datetime, date, time, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 # --- Config from env ---
@@ -57,66 +64,151 @@ def session_window_utc(d: date, which: str) -> tuple[datetime, datetime]:
         raise ValueError("unknown session")
     return s.astimezone(timezone.utc), e.astimezone(timezone.utc)
 
-def clamp_end(end_utc: datetime) -> datetime:
+def clamp_end(end_utc) -> datetime:
     """Clamp end to 'now - SAFETY_MINUTES' to avoid 422 after-available-range."""
     now_utc = datetime.now(timezone.utc)
     guard   = now_utc - timedelta(minutes=SAFETY_MINUTES)
     return min(end_utc, guard)
 
 def fetch_range(client, start_utc: datetime, end_utc: datetime):
-    # start_guard__patched_422: ensure end > start even if session crosses midnight
-    if start_utc: datetime >= end_utc: datetime:
-        end_utc: datetime = end_utc: datetime + timedelta(days=1)
-    """Fetch historical bars via the HTTP Historical API."""
-    import databento as db
-    # If 'client' is already the Historical client, use it; else build one.
+    """Fetch OHLCV via Databento HTTP Historical API with provider-edge guards."""
+    import os
+    # client
     if client is None:
         key = os.getenv("DATABENTO_API_KEY", "")
         if not key or not key.startswith("db-"):
             raise RuntimeError("DATABENTO_API_KEY is empty or malformed")
-        client = db.get_historical(DATABENTO_API_KEY if \"DATABENTO_API_KEY\" in globals() else None)
+        client = get_historical(key)
+
+    # clamp to provider "now"
+    guard = _provider_guard_now()
+    if end_utc > guard:
+        end_utc = guard
+    if start_utc >= guard:
+        start_utc = guard - timedelta(minutes=1)
+    if end_utc <= start_utc:
+        start_utc = end_utc - timedelta(minutes=1)
+
+    # instrument (prefer CONTRACT; fallback SYMBOL; default a plausible front)
+    symbol = os.getenv("CONTRACT") or os.getenv("SYMBOL", "NQU5")
+    schema = os.getenv("SCHEMA", "ohlcv-1m")
+
+    # try once, then retry on 422 with advertised end
+    try:
+        df = client.timeseries.get_range(
+            dataset="GLBX.MDP3",
+            symbols=symbol,
+            schema=schema,
+            start=start_utc,
+            end=end_utc,
+        ).to_df()
+    except BentoClientError as e:
+        m = re.search(r"available up to '([^']+)'", str(e))
+        if not m:
+            raise
+        from pandas import to_datetime
+        end_retry = to_datetime(m.group(1)).to_pydatetime()
+        if end_retry <= start_utc:
+            end_retry = start_utc + timedelta(minutes=1)
+        df = client.timeseries.get_range(
+            dataset="GLBX.MDP3",
+            symbols=symbol,
+            schema=schema,
+            start=start_utc,
+            end=end_retry,
+        ).to_df()
+
+    return df
+
+    """Fetch historical bars via Databento HTTP Historical API.
+
+    - If client is None, build it using .
+    - Ensure end_utc > start_utc (roll end by +1 day if needed).
+    - Clamp end_utc with clamp_end() to avoid provider edge (422).
+    """
+    import os
+
+    # Build client if needed
+    if client is None:
+        key = os.getenv("DATABENTO_API_KEY", "")
+        if not key or not key.startswith("db-"):
+            raise RuntimeError("DATABENTO_API_KEY is empty or malformed")
+        client = get_historical(key)
+    # --- Provider availability guard (handles midday replays) ---
+    guard = _provider_guard_now()
+    if end_utc > guard:
+        end_utc = guard
+    if start_utc >= guard:
+        # pull start just before guard to keep a valid window
+        start_utc = guard - timedelta(minutes=1)
+    if end_utc <= start_utc:
+        start_utc = end_utc - timedelta(minutes=1)
+
+    # Clamp to provider availability (final pass)
     end_utc = clamp_end(end_utc)
-    # Pull 1-min OHLCV and return the iterator
+
+    # Env-driven symbols/schema; dataset fixed to GLBX.MDP3
+    symbol = os.getenv("SYMBOL", "NQ")
+    schema = os.getenv("SCHEMA", "ohlcv-1m")
+
     return client.timeseries.get_range(
-        dataset=DATASET,
-        symbols=[SYMBOL],
-        schema=SCHEMA,
+        dataset="GLBX.MDP3",
+        symbols=symbol,
+        schema=schema,
         start=start_utc,
         end=end_utc,
-    )
+    ).to_df()
 
-def build_levels_for_day(client, d: date) -> dict:
-    """Gather highs/lows for Asia & London sessions; return dict with divided prices."""
-    out = {
-        "asia":   {"high": 0.0, "low": 0.0, "start": "18:00", "end": "00:00"},
-        "london": {"high": 0.0, "low": 0.0, "start": "02:00", "end": "05:00"},
-        "prev_day": {"high": 0.0, "low": 0.0},
+def build_levels_for_day(client, day_et):
+    """Compute Asia/London/Prev-Day highs/lows using clamped fetch_range.
+
+    Returns a dict like:
+    {
+      "Asia":   {"high": float, "low": float},
+      "London": {"high": float, "low": float},
+      "Prev":   {"high": float, "low": float},
     }
+    """
+    import math
+    import pandas as pd
 
-    for which in ("asia", "london"):
-        s_utc, e_utc = session_window_utc(d, which)
-        hi = lo = None
-        recs = fetch_range(client, s_utc, e_utc)
+    # Session windows (ET)
+    asia_s,   asia_e   = make_utc_range(day_et, "18:00", "00:00")
+    london_s, london_e = make_utc_range(day_et, "02:00", "05:00")
+    prev_s,   prev_e   = make_utc_range(day_et - timedelta(days=1), "09:30", "16:00")
 
-        # Iterate rows; support namedtuple-like OR dict-like records
-        for r in recs:
-            # high / low fields may be attributes or keys depending on library return
-            h = getattr(r, "high", None)
-            if h is None and isinstance(r, dict): h = r.get("high")
-            l = getattr(r, "low", None)
-            if l is None and isinstance(r, dict): l = r.get("low")
+    out = {"Asia": {"high": math.nan, "low": math.nan},
+           "London": {"high": math.nan, "low": math.nan},
+           "Prev": {"high": math.nan, "low": math.nan}}
 
-            if h is not None:
-                hi = h if hi is None else max(hi, h)
-            if l is not None:
-                lo = l if lo is None else min(lo, l)
+    def _hl(df: pd.DataFrame):
+        if df is None or df.empty:
+            return math.nan, math.nan
+        return float(df["high"].max()), float(df["low"].min())
 
-        if hi is not None and lo is not None:
-            out[which]["high"] = round(float(hi)/DIVISOR, 2)
-            out[which]["low"]  = round(float(lo)/DIVISOR, 2)
+    try:
+        a = fetch_range(client, asia_s, asia_e)
+        h, l = _hl(a)
+        out["Asia"]["high"] = h; out["Asia"]["low"] = l
+    except Exception as e:
+        # leave NaNs; caller may log
+        pass
+
+    try:
+        ldn = fetch_range(client, london_s, london_e)
+        h, l = _hl(ldn)
+        out["London"]["high"] = h; out["London"]["low"] = l
+    except Exception:
+        pass
+
+    try:
+        prv = fetch_range(client, prev_s, prev_e)
+        h, l = _hl(prv)
+        out["Prev"]["high"] = h; out["Prev"]["low"] = l
+    except Exception:
+        pass
 
     return out
-
 def save_levels(d: date, payload: dict):
     os.makedirs(os.path.dirname(LEVELS_FP), exist_ok=True)
     if os.path.exists(LEVELS_FP):
@@ -133,11 +225,10 @@ def save_levels(d: date, payload: dict):
 
 def main():
     # build Historical client
-    import databento as db
     key = os.getenv("DATABENTO_API_KEY", "")
     if not key or not key.startswith("db-"):
         raise RuntimeError("DATABENTO_API_KEY is empty or malformed")
-    client = db.get_historical(DATABENTO_API_KEY if \"DATABENTO_API_KEY\" in globals() else None)
+    client = get_historical(key)
 
     today_et = datetime.now(ET).date()
     levels = build_levels_for_day(client, today_et)
