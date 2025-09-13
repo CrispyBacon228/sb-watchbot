@@ -7,7 +7,6 @@ app = typer.Typer(help="sbwatch: AI trading alert system")
 
 @app.command()
 def check_env():
-    """Quick sanity check that env is wired."""
     typer.echo("DB_DATASET=" + settings.DB_DATASET)
     typer.echo("DB_SCHEMA=" + settings.DB_SCHEMA)
     typer.echo("FRONT_SYMBOL=" + settings.FRONT_SYMBOL)
@@ -15,9 +14,8 @@ def check_env():
     typer.echo("Discord webhook present: " + str(bool(settings.DISCORD_WEBHOOK_URL)))
 
 @app.command()
-def send_test_alert():
-    """Send a test alert to Discord to verify connectivity."""
-    sink = DiscordSink(settings.DISCORD_WEBHOOK_URL)
+def send_test_alert(verbose: bool = typer.Option(False, "--verbose", "-v")):
+    sink = DiscordSink(settings.DISCORD_WEBHOOK_URL, verbose=verbose)
     evt = DisplacementEvent(
         direction="SHORT",
         entry=23661.75,
@@ -31,22 +29,14 @@ def send_test_alert():
     sink.publish({"content": content})
 
 @app.command()
-def replay(date: str):
-    """
-    Run the replay pipeline for YYYY-MM-DD (stub).
-    Plug your existing replay logic here, using settings + sinks.
-    """
+def replay(date: str, verbose: bool = typer.Option(False, "--verbose", "-v")):
     typer.echo(f"Running replay for {date} with dataset={settings.DB_DATASET}, schema={settings.DB_SCHEMA}")
-    # TODO: import your historical fetch, levels build, detection, and publish alerts via DiscordSink
+    # TODO: plug replay logic here
 
 @app.command()
-def live():
-    """
-    Run live pipeline (stub).
-    Plug your streaming/loop logic here.
-    """
+def live(verbose: bool = typer.Option(False, "--verbose", "-v")):
     typer.echo("Starting live alerts...")
-    # TODO: connect to your live feed, detect setups, publish via DiscordSink
+    # TODO: plug live loop here
 
 if __name__ == "__main__":
     app()
