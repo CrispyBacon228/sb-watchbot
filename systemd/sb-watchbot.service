@@ -1,0 +1,14 @@
+[Unit]
+Description=SB Watchbot (live)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+WorkingDirectory=/opt/sb-watchbot
+EnvironmentFile=/opt/sb-watchbot/.env
+ExecStart=/opt/sb-watchbot/.venv/bin/sbwatch live --verbose
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

@@ -1,74 +1,43 @@
 from __future__ import annotations
-import argparse, os, sys
-from loguru import logger as log
-from .config import load_settings
-from .log import setup_logging
-from .timebox import now_et, is_us_session
-from .levels import Levels
-from .sweeps import SweepDetector
-from .engine import Engine
-from .formatters import format_trade, format_info
-from .alerts import Discord
-from . import feed as livefeed
+import os, logging, json
+from typing import Optional
+from sbwatch.adapters.logging import setup_logging
+from sbwatch.config.settings import settings
+from sbwatch.adapters.discord import DiscordSink
+from sbwatch.adapters.databento import DataBentoSource
+from sbwatch.core.levels import build_levels_for_day
+from sbwatch.core.engine import decide_trade_example
 
-def parse_args():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--dry-run", action="store_true")
-    ap.add_argument("--csv", help="ticks CSV: ts_iso,price")
-    return ap.parse_args()
+log = logging.getLogger("sbwatch.app")
 
-def main():
-    args = parse_args()
+def _sink(verbose: bool=False) -> DiscordSink:
+    wh = os.getenv("DISCORD_WEBHOOK_URL") or settings.DISCORD_WEBHOOK_URL
+    return DiscordSink(wh, verbose=verbose)
+
+def _source() -> DataBentoSource:
+    return DataBentoSource(settings.DATABENTO_API_KEY, settings.DB_DATASET, settings.DB_SCHEMA, settings.FRONT_SYMBOL)
+
+def build_levels(date: Optional[str]=None) -> None:
     setup_logging()
-    cfg = load_settings()
-    log.info("SB Watchbot starting")
+    d = date or "today"
+    levels = build_levels_for_day(d)
+    log.info("built levels %s", json.dumps(levels))
+    os.makedirs("data", exist_ok=True)
+    with open("data/levels.json","w") as f: json.dump(levels,f,indent=2)
 
-    levels = Levels(cfg.levels_path)
-    if not levels.get_for_today(now_et()):
-        ex = levels.example_today(now_et())
-        log.warning("No levels for today. Write /opt/sb-watchbot/data/levels.json"); log.warning(f"Example: {ex}")
+def run_replay(date: str, verbose: bool=False) -> None:
+    setup_logging()
+    src = _source()
+    sink = _sink(verbose)
+    log.info("replay start date=%s dataset=%s schema=%s symbol=%s", date, settings.DB_DATASET, settings.DB_SCHEMA, settings.FRONT_SYMBOL)
+    trade = decide_trade_example()
+    if trade:
+        sink.publish({"content": f"✅ Replay demo: {trade.side} entry {trade.entry} stop {trade.stop} basis {trade.basis}"})
+    log.info("replay done")
 
-    sweeper = SweepDetector(cfg.level_tolerance_ticks, cfg.tick_size, cfg.sweep_cooldown_min)
-    engine = Engine(cfg.tick_size, cfg.stop_buffer_ticks, cfg)
-    discord = Discord(cfg.discord_webhook)
-
-    if args.dry_run:
-        csv_path = args.csv or os.getenv("DRY_RUN_CSV")
-        if csv_path and os.path.exists(csv_path): tick_iter = livefeed.dry_run_ticks(csv_path)
-        else:
-            from random import random
-            from datetime import timedelta
-            px = 16000.0; ts = now_et()
-            def gen():
-                nonlocal px, ts
-                for _ in range(1200):
-                    px += (random()-0.5) * 2.0; ts += timedelta(seconds=1)
-                    yield livefeed.Tick(ts=ts, price=px)
-            tick_iter = gen()
-    else:
-        if not cfg.databento_key:
-            log.error("No DATABENTO_API_KEY in .env. Use --dry-run until you add it."); sys.exit(1)
-        tick_iter = livefeed.live_ticks(cfg.databento_key, cfg.instrument)
-
-    for t in tick_iter:
-        engine.on_tick_for_candles(t.ts, t.price)
-        if not is_us_session(t.ts.astimezone(now_et().tzinfo)): continue
-
-        today_levels = levels.get_for_today(t.ts)
-        if not today_levels: continue
-
-        lvmap = engine.build_levels_map(today_levels)
-        evt = sweeper.check(t.ts, t.price, lvmap)
-        if not evt: continue
-
-        idea = engine.decide(t.ts, evt.direction, evt.level_name, evt.level_price, t.price)
-        if not idea: continue
-
-        if idea.kind in ("SB","TRADE"):
-            discord.post(format_trade(idea))
-        else:
-            bias = "Long Bias" if "LONG" in idea.side else "Short Bias"
-            discord.post(format_info(idea.level_name, bias, t.price, t.ts.strftime("%H:%M:%S ET"), tol_ticks=3))
-
-if __name__ == "__main__":
-    main()
+def run_live(verbose: bool=False) -> None:
+    setup_logging()
+    src = _source()
+    sink = _sink(verbose)
+    log.info("live start dataset=%s schema=%s symbol=%s", settings.DB_DATASET, settings.DB_SCHEMA, settings.FRONT_SYMBOL)
+    sink.publish({"content":"🟢 sbwatch live started"})

@@ -1,0 +1,13 @@
+symbol: "NQ"
+price_divisor: 1000000000
+schema: "ohlcv-1m"
+dataset: "GLBX.MDP3"
+sessions:
+  ny_open: "09:30"
+  ny_killzone_start: "10:00"
+  ny_killzone_end: "11:00"
+tolerances:
+  sweep_ticks: 1
+cooldowns:
+  per_level_seconds: 300
+  global_seconds: 120

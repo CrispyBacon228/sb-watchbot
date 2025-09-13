@@ -1,38 +1,13 @@
-# Python
 __pycache__/
 *.py[cod]
 *.egg-info/
-.build/
-.dist/
-.eggs/
-.mypy_cache/
-pytest_cache/
-
-# Virtual envs
 .venv/
 venv/
-
-# Env/secrets (LOCAL ONLY)
 .env
 .env.*
-.envrc
-
-# Data/artifacts
+!*.env.example
 data/
 .replay/
-.cache/
-
-# OS/editor
 .DS_Store
-Thumbs.db
 .idea/
 .vscode/
-.venv/bin/activate.env.example
-.env.example
-install --upgrade pip > /dev/null.env.example
-
-# Allow example env templates to be tracked
-.env.example
-
-# Track example env templates
-!*.env.example
