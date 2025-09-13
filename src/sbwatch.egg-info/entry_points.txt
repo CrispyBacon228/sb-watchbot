@@ -1,0 +1,2 @@
+[console_scripts]
+sbwatch = sbwatch.cli.main:app
