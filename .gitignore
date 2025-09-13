@@ -1,0 +1,6 @@
+# Ignore sensitive and runtime files
+.env
+.venv/
+__pycache__/
+*.pyc
+data/*.json

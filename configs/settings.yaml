@@ -1,0 +1,29 @@
+instrument: "NQ"
+tick_size: 0.25
+timezone_et: "America/New_York"
+
+us_session: { start: "09:30", end: "16:00" }
+sb_window:  { start: "10:00", end: "11:00" }
+
+alerts:
+  sweeps_after_london_until_10: true
+  trade_alerts_930_to_10: true
+  allow_after_11: false
+
+level_tolerance_ticks: 3
+stop_buffer_ticks: 4
+
+execution:
+  require_displacement_candle: true
+  require_fvg_on_displacement: true
+  entry_on_fvg_refill: true
+  entry_basis: "last"
+  k_body_multiple: 1.5
+  n_body_lookback: 10
+
+sweep_cooldown_min: 15
+global_entry_cooldown_min: 3
+
+levels_path: "/opt/sb-watchbot/data/levels.json"
+state_path:  "/opt/sb-watchbot/data/state.json"
+log_path:    "/var/log/sb-watchbot/sb-watchbot.log"
