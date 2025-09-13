@@ -4,9 +4,11 @@ from typing import Optional
 from sbwatch.adapters.logging import setup_logging
 from sbwatch.config.settings import settings
 from sbwatch.adapters.discord import DiscordSink
-from sbwatch.adapters.databento import DataBentoSource
+from sbwatch.adapters.databento import DataBentoSource   # still a stub; not used yet
+from sbwatch.adapters.csvsource import find_csv_for_date, iter_bars_csv
 from sbwatch.core.levels import build_levels_for_day
-from sbwatch.core.engine import decide_trade_example
+from sbwatch.core.engine import decide_trade_on_bar, Bar
+from sbwatch.core.alerts import format_discord
 
 log = logging.getLogger("sbwatch.app")
 
@@ -15,6 +17,7 @@ def _sink(verbose: bool=False) -> DiscordSink:
     return DiscordSink(wh, verbose=verbose)
 
 def _source() -> DataBentoSource:
+    # placeholder: we keep signature stable for when you switch to Databento
     return DataBentoSource(settings.DATABENTO_API_KEY, settings.DB_DATASET, settings.DB_SCHEMA, settings.FRONT_SYMBOL)
 
 def build_levels(date: Optional[str]=None) -> None:
@@ -27,17 +30,24 @@ def build_levels(date: Optional[str]=None) -> None:
 
 def run_replay(date: str, verbose: bool=False) -> None:
     setup_logging()
-    src = _source()
     sink = _sink(verbose)
-    log.info("replay start date=%s dataset=%s schema=%s symbol=%s", date, settings.DB_DATASET, settings.DB_SCHEMA, settings.FRONT_SYMBOL)
-    trade = decide_trade_example()
-    if trade:
-        sink.publish({"content": f"✅ Replay demo: {trade.side} entry {trade.entry} stop {trade.stop} basis {trade.basis}"})
-    log.info("replay done")
+    path = find_csv_for_date(date)
+    if not path:
+        log.error("no CSV found for date %s (put data/%s.csv or NQ-%s-1m.csv)", date, date, date)
+        raise SystemExit(1)
+    log.info("replay: reading %s", path)
+
+    alerts = 0
+    for row in iter_bars_csv(path):
+        bar = Bar(**row)
+        alert = decide_trade_on_bar(bar)
+        if alert:
+            sink.publish({"content": format_discord(alert)})
+            alerts += 1
+    log.info("replay: done, alerts=%d", alerts)
 
 def run_live(verbose: bool=False) -> None:
     setup_logging()
-    src = _source()
     sink = _sink(verbose)
-    log.info("live start dataset=%s schema=%s symbol=%s", settings.DB_DATASET, settings.DB_SCHEMA, settings.FRONT_SYMBOL)
+    # When you implement DataBento live streaming, emit from that loop.
     sink.publish({"content":"🟢 sbwatch live started"})
