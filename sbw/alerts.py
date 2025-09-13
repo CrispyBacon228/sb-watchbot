@@ -1,15 +1,13 @@
-from __future__ import annotations
-import requests, time
-from loguru import logger as log
+import os, json, urllib.request
 
-class Discord:
-    def __init__(self, webhook: str): self.url = webhook.strip()
-    def post(self, content: str):
-        if not self.url:
-            log.warning(f"(NO DISCORD WEBHOOK) Would post:\n{content}"); return
-        for attempt in range(5):
-            r = requests.post(self.url, json={"content": content}, timeout=10)
-            if r.status_code in (200,204): return
-            if r.status_code in (429,500,502,503,504):
-                time.sleep(1.5*(attempt+1)); continue
-            r.raise_for_status()
+WEBHOOK = os.getenv("DISCORD_WEBHOOK")
+
+def dispatch(event: dict):
+    if not WEBHOOK:
+        print("⚠️ No DISCORD_WEBHOOK set")
+        return
+    data = json.dumps({"content": f"📢 {event}"}).encode()
+    req = urllib.request.Request(WEBHOOK, data, {"Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=5) as resp:
+        if resp.status != 204:
+            raise RuntimeError(f"Discord error {resp.status}")
