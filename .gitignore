@@ -1,21 +1,28 @@
 # Python
 __pycache__/
-*.pyc
-*.pyo
-*.pyd
+*.py[cod]
 *.egg-info/
-.dist/
 .build/
+.dist/
+.eggs/
+.mypy_cache/
+pytest_cache/
+
+# Virtual envs
 .venv/
 venv/
+
+# Env/secrets (LOCAL ONLY)
 .env
 .env.*
 .envrc
-# Data / artifacts
+
+# Data/artifacts
 data/
 .replay/
 .cache/
-# OS / editor
+
+# OS/editor
 .DS_Store
 Thumbs.db
 .idea/
