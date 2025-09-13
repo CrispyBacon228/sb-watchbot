@@ -1,6 +1,16 @@
-# Ignore sensitive and runtime files
+# Secrets & local env
 .env
+.env.*.bak
+.env.sh
+
+# Python junk
 .venv/
 __pycache__/
 *.pyc
+
+# Runtime data / logs
 data/*.json
+logs/
+
+# Local backups
+backups/
