@@ -1,10 +1,12 @@
 from __future__ import annotations
-import os, logging, json, yaml  # type: ignore
-from typing import Optional
+import os, logging, json, yaml, datetime as dt
+from zoneinfo import ZoneInfo
+from typing import Optional, Iterable
 from sbwatch.adapters.logging import setup_logging
 from sbwatch.config.settings import settings
 from sbwatch.adapters.discord import DiscordSink
 from sbwatch.adapters.csvsource import find_csv_for_date, iter_bars_csv
+from sbwatch.adapters.databento import DataBentoSource
 from sbwatch.core.alerts import format_discord
 from sbwatch.core.engine import SBEngine, SBParams, Bar
 
@@ -33,6 +35,13 @@ def _params_from_yaml() -> SBParams:
         require_fvg=ref["require_fvg"],
     )
 
+def _am_window_iso(date: str, tz: str) -> tuple[str, str]:
+    z = ZoneInfo(tz)
+    start = dt.datetime.fromisoformat(f"{date}T10:00:00").replace(tzinfo=z)
+    end   = dt.datetime.fromisoformat(f"{date}T11:00:00").replace(tzinfo=z)
+    return start.astimezone(ZoneInfo("UTC")).isoformat().replace("+00:00","Z"), \
+           end.astimezone(ZoneInfo("UTC")).isoformat().replace("+00:00","Z")
+
 def build_levels(date: Optional[str]=None) -> None:
     setup_logging()
     d = date or "today"
@@ -41,26 +50,33 @@ def build_levels(date: Optional[str]=None) -> None:
     with open("data/levels.json","w") as f: json.dump(levels,f,indent=2)
     log.info("built levels %s", json.dumps(levels))
 
+def _iter_bars_for_date(date: str, params: SBParams) -> Iterable[dict]:
+    # Prefer Databento if key is present; else CSV
+    if os.getenv("DATABENTO_API_KEY") or settings.DATABENTO_API_KEY:
+        dbs = DataBentoSource(settings.DATABENTO_API_KEY, settings.DB_DATASET, settings.DB_SCHEMA, settings.FRONT_SYMBOL)
+        start_iso, end_iso = _am_window_iso(date, params.tz)
+        log.info("replay: Databento %s %s %s start=%s end=%s",
+                 settings.DB_DATASET, settings.DB_SCHEMA, settings.FRONT_SYMBOL, start_iso, end_iso)
+        return dbs.replay(start=start_iso, end=end_iso)
+    path = find_csv_for_date(date)
+    if not path:
+        raise SystemExit(f"no CSV found for {date} (put data/{date}.csv or NQ-{date}-1m.csv)")
+    log.info("replay: reading %s", path)
+    return iter_bars_csv(path)
+
 def run_replay(date: str, verbose: bool=False) -> None:
     setup_logging()
     sink = _sink(verbose)
     params = _params_from_yaml()
     eng = SBEngine(params)
 
-    path = find_csv_for_date(date)
-    if not path:
-        log.error("no CSV found for date %s (put data/%s.csv or NQ-%s-1m.csv)", date, date, date)
-        raise SystemExit(1)
-    log.info("replay: reading %s", path)
-
     pdh = pdl = None
-    lvl_path = "data/levels.json"
-    if os.path.exists(lvl_path):
-        with open(lvl_path) as f:
+    if os.path.exists("data/levels.json"):
+        with open("data/levels.json") as f:
             lv = json.load(f); pdh, pdl = lv.get("pdh"), lv.get("pdl")
 
     alerts = 0
-    for row in iter_bars_csv(path):
+    for row in _iter_bars_for_date(date, params):
         bar = Bar(**row)
         a = eng.on_bar(bar, pdh=pdh, pdl=pdl)
         if a:
@@ -71,4 +87,15 @@ def run_replay(date: str, verbose: bool=False) -> None:
 def run_live(verbose: bool=False) -> None:
     setup_logging()
     sink = _sink(verbose)
-    sink.publish({"content":"🟢 sbwatch live started (wire Databento stream next)"})
+    params = _params_from_yaml()
+    eng = SBEngine(params)
+    if not (os.getenv("DATABENTO_API_KEY") or settings.DATABENTO_API_KEY):
+        sink.publish({"content":"🟢 sbwatch live started (Databento key missing; CSV has no live)"}); return
+    dbs = DataBentoSource(settings.DATABENTO_API_KEY, settings.DB_DATASET, settings.DB_SCHEMA, settings.FRONT_SYMBOL)
+    sink.publish({"content":"🟢 sbwatch live started (Databento)"}); alerts = 0
+    for row in dbs.stream():
+        bar = Bar(**row)
+        a = eng.on_bar(bar)
+        if a:
+            sink.publish({"content": format_discord(a)})
+            alerts += 1
