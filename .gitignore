@@ -1,16 +1,22 @@
-# Secrets & local env
-.env
-.env.*.bak
-.env.sh
-
-# Python junk
-.venv/
+# Python
 __pycache__/
 *.pyc
-
-# Runtime data / logs
-data/*.json
-logs/
-
-# Local backups
-backups/
+*.pyo
+*.pyd
+*.egg-info/
+.dist/
+.build/
+.venv/
+venv/
+.env
+.env.*
+.envrc
+# Data / artifacts
+data/
+.replay/
+.cache/
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
