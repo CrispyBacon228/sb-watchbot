@@ -106,7 +106,7 @@ def main():
     if not api_key:
         raise SystemExit("DATABENTO_API_KEY not set in env")
 
-    api = Historical(api_key)
+    api = Historical(key=api_key)
 
     # Today's ET (date key e.g., "2025-09-10")
     now_et = dt_et(datetime.now(tz=UTC))

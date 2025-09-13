@@ -19,7 +19,6 @@ def make_utc_range(day_et: date, start_hhmm: str, end_hhmm: str, tz: str = "Amer
 
 
 from dataclasses import asdict
-from scripts.db_client import get_historical
 from datetime import datetime, date, time, timedelta, timezone
 from zoneinfo import ZoneInfo
 
@@ -74,7 +73,7 @@ def fetch_range(client, start_utc: datetime, end_utc: datetime):
         key = os.getenv("DATABENTO_API_KEY", "")
         if not key or not key.startswith("db-"):
             raise RuntimeError("DATABENTO_API_KEY is empty or malformed")
-        client = db.get_historical(DATABENTO_API_KEY if \"DATABENTO_API_KEY\" in globals() else None)
+        client = db.Historical(key)
     end_utc = clamp_end(end_utc)
     # Pull 1-min OHLCV and return the iterator
     return client.timeseries.get_range(
@@ -137,7 +136,7 @@ def main():
     key = os.getenv("DATABENTO_API_KEY", "")
     if not key or not key.startswith("db-"):
         raise RuntimeError("DATABENTO_API_KEY is empty or malformed")
-    client = db.get_historical(DATABENTO_API_KEY if \"DATABENTO_API_KEY\" in globals() else None)
+    client = db.Historical(key)
 
     today_et = datetime.now(ET).date()
     levels = build_levels_for_day(client, today_et)

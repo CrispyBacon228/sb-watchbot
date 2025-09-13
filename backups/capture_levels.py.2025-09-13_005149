@@ -1,25 +1,6 @@
 #!/usr/bin/env python3
 import os, json, sys, traceback
-
-def _et_time(hhmm: str) -> time:
-    h, m = map(int, hhmm.split(":"))
-    return time(hour=h, minute=m)
-
-def make_utc_range(day_et: date, start_hhmm: str, end_hhmm: str, tz: str = "America/New_York") -> tuple[datetime, datetime]:
-    # Build half-open [start, end) in UTC for an ET session anchored to ET date.
-    # If end <= start, roll end to next ET day (handles midnight crossover).
-    z = ZoneInfo(tz)
-    s_local = datetime.combine(day_et, _et_time(start_hhmm), tzinfo=z)
-    e_local = datetime.combine(day_et, _et_time(end_hhmm), tzinfo=z)
-    if end_hhmm <= start_hhmm:
-        e_local = e_local + timedelta(days=1)
-    s_utc = s_local.astimezone(timezone.utc)
-    e_utc = e_local.astimezone(timezone.utc)
-    return s_utc, e_utc
-
-
 from dataclasses import asdict
-from scripts.db_client import get_historical
 from datetime import datetime, date, time, timedelta, timezone
 from zoneinfo import ZoneInfo
 
@@ -64,9 +45,6 @@ def clamp_end(end_utc: datetime) -> datetime:
     return min(end_utc, guard)
 
 def fetch_range(client, start_utc: datetime, end_utc: datetime):
-    # start_guard__patched_422: ensure end > start even if session crosses midnight
-    if start_utc: datetime >= end_utc: datetime:
-        end_utc: datetime = end_utc: datetime + timedelta(days=1)
     """Fetch historical bars via the HTTP Historical API."""
     import databento as db
     # If 'client' is already the Historical client, use it; else build one.
@@ -74,7 +52,7 @@ def fetch_range(client, start_utc: datetime, end_utc: datetime):
         key = os.getenv("DATABENTO_API_KEY", "")
         if not key or not key.startswith("db-"):
             raise RuntimeError("DATABENTO_API_KEY is empty or malformed")
-        client = db.get_historical(DATABENTO_API_KEY if \"DATABENTO_API_KEY\" in globals() else None)
+        client = db.Historical(key)
     end_utc = clamp_end(end_utc)
     # Pull 1-min OHLCV and return the iterator
     return client.timeseries.get_range(
@@ -137,7 +115,7 @@ def main():
     key = os.getenv("DATABENTO_API_KEY", "")
     if not key or not key.startswith("db-"):
         raise RuntimeError("DATABENTO_API_KEY is empty or malformed")
-    client = db.get_historical(DATABENTO_API_KEY if \"DATABENTO_API_KEY\" in globals() else None)
+    client = db.Historical(key)
 
     today_et = datetime.now(ET).date()
     levels = build_levels_for_day(client, today_et)
