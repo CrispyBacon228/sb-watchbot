@@ -28,3 +28,11 @@ Thumbs.db
 .idea/
 .vscode/
 .venv/bin/activate.env.example
+.env.example
+install --upgrade pip > /dev/null.env.example
+
+# Allow example env templates to be tracked
+.env.example
+
+# Track example env templates
+!*.env.example
