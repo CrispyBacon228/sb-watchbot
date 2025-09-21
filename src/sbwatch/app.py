@@ -1,101 +1,81 @@
 from __future__ import annotations
-import os, logging, json, yaml, datetime as dt
+import os, json
+from dataclasses import dataclass
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
-from typing import Optional, Iterable
-from sbwatch.adapters.logging import setup_logging
-from sbwatch.config.settings import settings
-from sbwatch.adapters.discord import DiscordSink
-from sbwatch.adapters.csvsource import find_csv_for_date, iter_bars_csv
-from sbwatch.adapters.databento import DataBentoSource
-from sbwatch.core.alerts import format_discord
-from sbwatch.core.engine import SBEngine, SBParams, Bar
+from databento import Historical
 
-log = logging.getLogger("sbwatch.app")
+UTC = ZoneInfo("UTC")
+ET  = ZoneInfo("America/New_York")
 
-def _sink(verbose: bool=False) -> DiscordSink:
-    wh = os.getenv("DISCORD_WEBHOOK_URL") or settings.DISCORD_WEBHOOK_URL
-    return DiscordSink(wh, verbose=verbose)
+def _iso(dt: datetime) -> str:
+    # Databento expects ISO8601 with timezone
+    return dt.astimezone(UTC).isoformat()
 
-def _params_from_yaml() -> SBParams:
-    with open("configs/settings.yaml","r") as f:
-        cfg = yaml.safe_load(f)
-    t = cfg["tolerances"]; s = cfg["sessions"]; r = cfg["risk"]; ref = cfg["references"]
-    return SBParams(
-        tz=s["tz"],
-        kill_start=s["ny_killzone_start"],
-        kill_end=s["ny_killzone_end"],
-        sweep_ticks=t["sweep_ticks"],
-        disp_min_ticks=t["displacement_min_ticks"],
-        fvg_min_ticks=t["fvg_min_ticks"],
-        refill_tol_ticks=t["refill_tolerance_ticks"],
-        tp1_r=r["tp1_r_multiple"],
-        tp2_r=r["tp2_r_multiple"],
-        stop_buf_ticks=r["stop_buffer_ticks"],
-        ref_lookback_minutes=ref["ref_lookback_minutes"],
-        require_fvg=ref["require_fvg"],
+def _fetch_hi_lo(start: datetime, end: datetime) -> tuple[float|None,float|None,int]:
+    """Return (hi, lo, rows) for the given [start,end) UTC window."""
+    h = Historical(os.getenv("DATABENTO_API_KEY"))  # key from .env
+    store = h.timeseries.get_range(
+        dataset=os.getenv("DB_DATASET", "GLBX.MDP3"),
+        schema=os.getenv("DB_SCHEMA", "ohlcv-1m"),
+        symbols=os.getenv("FRONT_SYMBOL", "NQU5"),
+        start=_iso(start),
+        end=_iso(end),
     )
+    df = store.to_df()
+    if df.empty:
+        return None, None, 0
+    return float(df["high"].max()), float(df["low"].min()), len(df)
 
-def _am_window_iso(date: str, tz: str) -> tuple[str, str]:
-    z = ZoneInfo(tz)
-    start = dt.datetime.fromisoformat(f"{date}T10:00:00").replace(tzinfo=z)
-    end   = dt.datetime.fromisoformat(f"{date}T11:00:00").replace(tzinfo=z)
-    return start.astimezone(ZoneInfo("UTC")).isoformat().replace("+00:00","Z"), \
-           end.astimezone(ZoneInfo("UTC")).isoformat().replace("+00:00","Z")
+def _prev_business_day(day_et: datetime) -> datetime:
+    d = (day_et - timedelta(days=1)).date()
+    # simple weekend adjust
+    if d.weekday() == 6:  # Sun -> Fri
+        d = d - timedelta(days=2)
+    elif d.weekday() == 5:  # Sat -> Fri
+        d = d - timedelta(days=1)
+    return datetime.combine(d, datetime.min.time(), tzinfo=ET)
 
-def build_levels(date: Optional[str]=None) -> None:
-    setup_logging()
-    d = date or "today"
-    levels = {"date": d, "pdh": None, "pdl": None}
+def build_levels(date: str, verbose: bool=False) -> dict:
+    """Build Asia/London session highs/lows and PDH/PDL for the given YYYY-MM-DD (ET)."""
+    if not os.getenv("DATABENTO_API_KEY"):
+        raise RuntimeError("DATABENTO_API_KEY is not set")
+
+    day_et = datetime.strptime(date, "%Y-%m-%d").replace(tzinfo=ET)
+
+    # Session windows in UTC
+    asia_start   = day_et.astimezone(UTC).replace(hour=0,  minute=0,  second=0, microsecond=0)
+    asia_end     = day_et.astimezone(UTC).replace(hour=6,  minute=0,  second=0, microsecond=0)
+    london_start = day_et.astimezone(UTC).replace(hour=8,  minute=0,  second=0, microsecond=0)
+    london_end   = day_et.astimezone(UTC).replace(hour=12, minute=0,  second=0, microsecond=0)
+
+    # Previous RTH (09:30–16:00 ET) -> 13:30–20:00 UTC during DST
+    prev_et = _prev_business_day(day_et)
+    rth_start = prev_et.replace(hour=9,  minute=30, second=0, microsecond=0).astimezone(UTC)
+    rth_end   = prev_et.replace(hour=16, minute=0,  second=0, microsecond=0).astimezone(UTC)
+
+    asia_hi,   asia_lo,   asia_rows   = _fetch_hi_lo(asia_start,   asia_end)
+    london_hi, london_lo, london_rows = _fetch_hi_lo(london_start, london_end)
+    pdh,       pdl,       rth_rows    = _fetch_hi_lo(rth_start,    rth_end)
+
+    out = {
+        "date": date,
+        "pdh": pdh, "pdl": pdl,
+        "asia_high": asia_hi, "asia_low": asia_lo,
+        "london_high": london_hi, "london_low": london_lo,
+    }
+
     os.makedirs("data", exist_ok=True)
-    with open("data/levels.json","w") as f: json.dump(levels,f,indent=2)
-    log.info("built levels %s", json.dumps(levels))
+    with open("data/levels.json", "w") as f:
+        json.dump(out, f)
+    if verbose:
+        print("[levels]", out)
+        print("[rows] asia", asia_rows, "london", london_rows, "rth", rth_rows)
+    return out
 
-def _iter_bars_for_date(date: str, params: SBParams) -> Iterable[dict]:
-    # Prefer Databento if key is present; else CSV
-    if os.getenv("DATABENTO_API_KEY") or settings.DATABENTO_API_KEY:
-        dbs = DataBentoSource(settings.DATABENTO_API_KEY, settings.DB_DATASET, settings.DB_SCHEMA, settings.FRONT_SYMBOL)
-        start_iso, end_iso = _am_window_iso(date, params.tz)
-        log.info("replay: Databento %s %s %s start=%s end=%s",
-                 settings.DB_DATASET, settings.DB_SCHEMA, settings.FRONT_SYMBOL, start_iso, end_iso)
-        return dbs.replay(start=start_iso, end=end_iso)
-    path = find_csv_for_date(date)
-    if not path:
-        raise SystemExit(f"no CSV found for {date} (put data/{date}.csv or NQ-{date}-1m.csv)")
-    log.info("replay: reading %s", path)
-    return iter_bars_csv(path)
-
-def run_replay(date: str, verbose: bool=False) -> None:
-    setup_logging()
-    sink = _sink(verbose)
-    params = _params_from_yaml()
-    eng = SBEngine(params)
-
-    pdh = pdl = None
-    if os.path.exists("data/levels.json"):
-        with open("data/levels.json") as f:
-            lv = json.load(f); pdh, pdl = lv.get("pdh"), lv.get("pdl")
-
-    alerts = 0
-    for row in _iter_bars_for_date(date, params):
-        bar = Bar(**row)
-        a = eng.on_bar(bar, pdh=pdh, pdl=pdl)
-        if a:
-            sink.publish({"content": format_discord(a)})
-            alerts += 1
-    log.info("replay: done, alerts=%d", alerts)
-
-def run_live(verbose: bool=False) -> None:
-    setup_logging()
-    sink = _sink(verbose)
-    params = _params_from_yaml()
-    eng = SBEngine(params)
-    if not (os.getenv("DATABENTO_API_KEY") or settings.DATABENTO_API_KEY):
-        sink.publish({"content":"🟢 sbwatch live started (Databento key missing; CSV has no live)"}); return
-    dbs = DataBentoSource(settings.DATABENTO_API_KEY, settings.DB_DATASET, settings.DB_SCHEMA, settings.FRONT_SYMBOL)
-    sink.publish({"content":"🟢 sbwatch live started (Databento)"}); alerts = 0
-    for row in dbs.stream():
-        bar = Bar(**row)
-        a = eng.on_bar(bar)
-        if a:
-            sink.publish({"content": format_discord(a)})
-            alerts += 1
+# --- ensure .env is loaded if present (so CLI sees env even when not exported) ---
+from pathlib import Path
+from dotenv import load_dotenv
+env_path = (Path(__file__).resolve().parents[2] / ".env")
+if env_path.exists():
+    load_dotenv(env_path)
