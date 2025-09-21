@@ -44,16 +44,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
-
-def _load_levels_json():
-    import json, os
-    try:
-        with open(os.path.join("data","levels.json"), "r") as f:
-            d = json.load(f)
-        # Only keep fields DayLevels knows about
-        fields = DayLevels.__annotations__.keys()
-        clean = {k: d.get(k) for k in fields}
-        return DayLevels(**clean)
-    except Exception:
-        return None
