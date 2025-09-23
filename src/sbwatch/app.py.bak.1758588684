@@ -1,0 +1,198 @@
+from __future__ import annotations
+import os, json
+
+# === SB_OVERRIDE_WINDOWS ===
+import os
+def _sb_apply_window_overrides(day, asia_start, asia_end, london_start, london_end):
+    """Override session windows from env, without assuming original code shape."""
+    try:
+        ls = os.getenv("LONDON_START_UTC")
+        le = os.getenv("LONDON_END_UTC")
+        if ls is not None:
+            london_start = day.replace(hour=int(ls), minute=0, second=0, microsecond=0)
+        if le is not None:
+            london_end = day.replace(hour=int(le), minute=0, second=0, microsecond=0)
+
+# === SB_OVERRIDE_WINDOWS_CALL ===
+# Post-process session windows with environment overrides
+try:
+    import dotenv
+    from pathlib import Path
+    env_path = Path(__file__).resolve().parent.parent.parent / ".env"
+    if env_path.exists():
+        dotenv.load_dotenv(env_path)
+except Exception as e:
+    print("[warn] dotenv load failed:", e)
+    # If any variable name differs, you can move/adjust this block manually.
+    pass
+# === SB_OVERRIDE_WINDOWS_CALL ===
+    except Exception:
+        # keep originals on any error
+        pass
+    return asia_start, asia_end, london_start, london_end
+# === SB_OVERRIDE_WINDOWS ===
+from dataclasses import dataclass
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
+from databento import Historical
+
+UTC = ZoneInfo("UTC")
+ET  = ZoneInfo("America/New_York")
+
+def _iso(dt: datetime) -> str:
+    # Databento expects ISO8601 with timezone
+    return dt.astimezone(UTC).isoformat()
+
+def _fetch_hi_lo(start: datetime, end: datetime) -> tuple[float|None,float|None,int]:
+    """Return (hi, lo, rows) for the given [start,end) UTC window."""
+    h = Historical(os.getenv("DATABENTO_API_KEY"))  # key from .env
+    store = h.timeseries.get_range(
+        dataset=os.getenv("DB_DATASET", "GLBX.MDP3"),
+        schema=os.getenv("DB_SCHEMA", "ohlcv-1m"),
+        symbols=os.getenv("FRONT_SYMBOL", "NQU5"),
+        start=_iso(start),
+        end=_iso(end),
+    )
+    df = store.to_df()
+    if df.empty:
+        return None, None, 0
+    return float(df["high"].max()), float(df["low"].min()), len(df)
+
+def _prev_business_day(day_et: datetime) -> datetime:
+    d = (day_et - timedelta(days=1)).date()
+    # simple weekend adjust
+    if d.weekday() == 6:  # Sun -> Fri
+        d = d - timedelta(days=2)
+    elif d.weekday() == 5:  # Sat -> Fri
+        d = d - timedelta(days=1)
+    return datetime.combine(d, datetime.min.time(), tzinfo=ET)
+
+def build_levels(date: str, verbose: bool=False) -> dict:
+    """Build Asia/London session highs/lows and PDH/PDL for the given YYYY-MM-DD (ET)."""
+    if not os.getenv("DATABENTO_API_KEY"):
+        raise RuntimeError("DATABENTO_API_KEY is not set")
+
+    day_et = datetime.strptime(date, "%Y-%m-%d").replace(tzinfo=ET)
+
+    # Session windows in UTC
+    asia_start   = day_et.astimezone(UTC).replace(hour=0,  minute=0,  second=0, microsecond=0)
+    asia_end     = day_et.astimezone(UTC).replace(hour=6,  minute=0,  second=0, microsecond=0)
+    london_start = day_et.astimezone(UTC).replace(hour=8,  minute=0,  second=0, microsecond=0)
+    london_end   = day_et.astimezone(UTC).replace(hour=12, minute=0,  second=0, microsecond=0)
+
+    # Previous RTH (09:30–16:00 ET) -> 13:30–20:00 UTC during DST
+    prev_et = _prev_business_day(day_et)
+    rth_start = prev_et.replace(hour=9,  minute=30, second=0, microsecond=0).astimezone(UTC)
+    rth_end   = prev_et.replace(hour=16, minute=0,  second=0, microsecond=0).astimezone(UTC)
+
+    asia_hi,   asia_lo,   asia_rows   = _fetch_hi_lo(asia_start,   asia_end)
+    london_hi, london_lo, london_rows = _fetch_hi_lo(london_start, london_end)
+    pdh,       pdl,       rth_rows    = _fetch_hi_lo(rth_start,    rth_end)
+
+    out = {
+        "date": date,
+        "pdh": pdh, "pdl": pdl,
+        "asia_high": asia_hi, "asia_low": asia_lo,
+        "london_high": london_hi, "london_low": london_lo,
+    }
+
+    os.makedirs("data", exist_ok=True)
+    with open("data/levels.json", "w") as f:
+        json.dump(out, f)
+    if verbose:
+        print("[levels]", out)
+        print("[rows] asia", asia_rows, "london", london_rows, "rth", rth_rows)
+    return out
+
+# --- ensure .env is loaded if present (so CLI sees env even when not exported) ---
+from pathlib import Path
+from dotenv import load_dotenv
+env_path = (Path(__file__).resolve().parents[2] / ".env")
+if env_path.exists():
+    load_dotenv(env_path)
+
+# --- levels.json loader -------------------------------------------------------
+from sbwatch.core.levels import DayLevels  # dataclass with as_dict()
+
+def load_levels_json(path: str = "data/levels.json") -> DayLevels | None:
+    """Load DayLevels from a JSON file written by `sbwatch build-levels`.
+    Returns None if the file doesn't exist or can't be parsed."""
+    fp = Path(path)
+    if not fp.exists():
+        return None
+    try:
+        obj = json.loads(fp.read_text())
+        # Accept either exact dataclass keys or a superset
+        # (unknown keys are ignored by **obj if they match dataclass fields)
+        return DayLevels(
+            date=obj.get("date"),
+            pdh=obj.get("pdh"),
+            pdl=obj.get("pdl"),
+            asia_high=obj.get("asia_high"),
+            asia_low=obj.get("asia_low"),
+            london_high=obj.get("london_high"),
+            london_low=obj.get("london_low"),
+        )
+    except Exception:
+        return None
+
+# --- shim: export run_replay for CLI ---
+try:
+    # Import the actual implementation if it exists somewhere else:
+    from sbwatch.core.engine import run_replay as _run_replay  # adjust if needed
+except Exception:
+    _run_replay = None
+
+
+try:
+    from sbwatch._oldreplay_app import run_replay as _legacy_run_replay
+except Exception:
+    try:
+        from sbwatch._oldreplay_app import replay as _legacy_run_replay
+    except Exception:
+        _legacy_run_replay = None
+
+def run_replay(date: str, verbose: bool = False):
+    """CLI shim: call legacy replay if available, else raise a clear error."""
+    if _legacy_run_replay is None:
+        raise ImportError(
+            "run_replay implementation not found in sbwatch._oldreplay_app; "
+            "no legacy replay available."
+        )
+    return _legacy_run_replay(date, verbose=verbose)
+
+# --- ensure env overrides safely ---
+import os
+from dotenv import load_dotenv
+
+# Load .env file if present
+env_path = os.path.join(os.path.dirname(__file__), "..", "..", ".env")
+if os.path.exists(env_path):
+    load_dotenv(env_path)
+
+# Force override for current contract
+os.environ["FRONT_SYMBOL"] = "NQZ5"
+
+# Override London session times (2–5 AM ET)
+os.environ["LONDON_START"] = "02:00"
+os.environ["LONDON_END"]   = "05:00"
+
+print("[ok] app.py env overrides applied: NQZ5, London 2–5 AM ET")
+
+# --- ensure env overrides safely ---
+import os
+from dotenv import load_dotenv
+
+# Load .env file if present
+env_path = os.path.join(os.path.dirname(__file__), "..", "..", ".env")
+if os.path.exists(env_path):
+    load_dotenv(env_path)
+
+# Force override for current contract
+os.environ["FRONT_SYMBOL"] = "NQZ5"
+
+# Override London session times (2–5 AM ET)
+os.environ["LONDON_START"] = "02:00"
+os.environ["LONDON_END"]   = "05:00"
+
+print("[ok] app.py env overrides applied: NQZ5, London 2–5 AM ET")

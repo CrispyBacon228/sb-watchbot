@@ -1,0 +1,5 @@
+Usage: sbwatch build-levels [OPTIONS]
+Try 'sbwatch build-levels --help' for help.
+╭─ Error ──────────────────────────────────────────────────────────────────────╮
+│ Got unexpected extra argument (2025-09-21)                                   │
+╰──────────────────────────────────────────────────────────────────────────────╯

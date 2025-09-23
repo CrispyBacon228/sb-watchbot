@@ -1,59 +1,49 @@
-from __future__ import annotations
-import os, json
-import typer
-from sbwatch.core.levels import DayLevels
+from sbwatch.core.engine import SBEngine, SBParams
+from sbwatch.app import load_levels_json
+import typer, os
+from dotenv import load_dotenv
+from sbwatch.app import run_replay
+
+load_dotenv(dotenv_path=".env")
+
+from typing import Optional
 
 app = typer.Typer(help="sbwatch: AI trading alert system")
 
-@app.command("check-env")
-def check_env() -> None:
-    keys = (
-        "DATABENTO_API_KEY",
-        "DB_DATASET",
-        "DB_SCHEMA",
-        "FRONT_SYMBOL",
-        "PRICE_DIVISOR",
-        "DISCORD_WEBHOOK_URL",
-    )
-    for k in keys:
-        print(f"{k}={os.getenv(k,'')}")
+@app.command()
+def check_env():
+    for k in ["DATABENTO_API_KEY","DB_DATASET","DB_SCHEMA","FRONT_SYMBOL","PRICE_DIVISOR","DISCORD_WEBHOOK_URL"]:
+        v = os.getenv(k, "")
+        if k == "DATABENTO_API_KEY" and v: v = v[:7] + "…"
+        print(f"{k}={v if v else '(unset)'}")
 
-@app.command("replay")
-def replay(date: str) -> None:
-    # placeholder; not needed for levels writing
-    typer.echo(f"[replay] stub for {date}")
+@app.command()
+def live(verbose: bool = typer.Option(False, "--verbose", "-v")):
+    run_live(verbose=verbose)
+
+@app.command()
+def replay(date: str = typer.Argument(..., help="YYYY-MM-DD"),
+           verbose: bool = typer.Option(False, "--verbose", "-v")):
+    run_replay(date=date, verbose=verbose)
 
 @app.command("build-levels")
-def build_levels_cmd(date: str) -> None:
-    """Write Asia/London session levels JSON (drop pdh/pdl)."""
-    out = {
-        "date": date,
-        "asia_high": None,
-        "asia_low": None,
-        "london_high": None,
-        "london_low": None,
-    }
-    import os, json
-    os.makedirs("data", exist_ok=True)
-    with open("data/levels.json", "w") as f:
-        json.dump(out, f)
-    print(f"[sbwatch] built levels {out}")
+def build_levels_cmd(date: Optional[str] = typer.Option(None, "--date", help="YYYY-MM-DD (optional)")):
+    build_levels(date=date)
 
+@app.command("send-test-alert")
+def send_test_alert(verbose: bool = typer.Option(False, "--verbose", "-v")):
+    from sbwatch.adapters.discord import DiscordSink
+    wh = os.getenv("DISCORD_WEBHOOK_URL", "")
+    if not wh: raise SystemExit("DISCORD_WEBHOOK_URL not set")
+    DiscordSink(wh, verbose=verbose).publish({"content":"✅ sbwatch test alert"})
+
+# --- entrypoint required by the console script -------------------------------
 def main() -> None:
+    # Exported so `from sbwatch.cli.main import main; main()` works
+    # (what venv/bin/sbwatch does).
     app()
 
+# keep it runnable via `python -m sbwatch.cli.main`
 if __name__ == "__main__":
-    main()
-
-
-def _load_levels_json():
-    import json, os
-    try:
-        with open(os.path.join("data","levels.json"), "r") as f:
-            d = json.load(f)
-        # Only keep fields DayLevels knows about
-        fields = DayLevels.__annotations__.keys()
-        clean = {k: d.get(k) for k in fields}
-        return DayLevels(**clean)
-    except Exception:
-        return None
+    main()# --- FIX: import the actual build_levels function ---
+from sbwatch.app import build_levels

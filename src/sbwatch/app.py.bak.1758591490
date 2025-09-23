@@ -1,0 +1,160 @@
+from __future__ import annotations
+
+import json
+import os
+from pathlib import Path
+from dataclasses import asdict
+from datetime import datetime, timedelta, timezone
+
+# Safe .env loader
+try:
+    from dotenv import load_dotenv
+    _env = (Path(__file__).resolve().parent.parent.parent / ".env")
+    if _env.exists():
+        load_dotenv(_env)
+except Exception as e:
+    print("[warn] dotenv load failed:", e)
+
+# Types
+try:
+    from sbwatch.core.levels import DayLevels
+except Exception:
+    from dataclasses import dataclass
+    from typing import Optional
+    @dataclass
+    class DayLevels:
+        date: str
+        pdh: Optional[float] = None
+        pdl: Optional[float] = None
+        asia_high: Optional[float] = None
+        asia_low: Optional[float] = None
+        london_high: Optional[float] = None
+        london_low: Optional[float] = None
+
+# ---- Config / constants ----
+DATASET = os.getenv("DB_DATASET", "GLBX.MDP3")
+SCHEMA  = os.getenv("DB_SCHEMA", "ohlcv-1m")
+SYMBOL  = os.getenv("FRONT_SYMBOL", "NQZ5")
+DIVISOR = float(os.getenv("PRICE_DIVISOR", "1")) or 1.0
+
+# London 02:00–05:00 ET  =>  06:00–09:00 UTC
+ASIA_START_UTC,   ASIA_END_UTC   = 0, 6
+LONDON_START_UTC, LONDON_END_UTC = 6, 9
+
+DATA_DIR = Path("data"); DATA_DIR.mkdir(exist_ok=True)
+LEVELS_PATH = DATA_DIR / "levels.json"
+
+# ---- Helpers ----
+def _parse_day_utc(date_str: str) -> datetime:
+    d = datetime.strptime(date_str, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+    return d.replace(hour=0, minute=0, second=0, microsecond=0)
+
+def _utc_range(day: str, start_h: int, end_h: int) -> tuple[datetime, datetime]:
+    base = _parse_day_utc(day)
+    return base.replace(hour=start_h), base.replace(hour=end_h)
+
+def _is_weekend(dt_utc: datetime) -> bool:
+    # Mon=0, Sun=6
+    return dt_utc.weekday() >= 5
+
+def _prev_business_day_str(date_str: str) -> str:
+    """
+    Return the most recent YYYY-MM-DD that is Mon–Fri before the given date.
+    If date_str itself is a weekend, it backs up to Friday.
+    """
+    d = _parse_day_utc(date_str)
+    d -= timedelta(days=1)
+    while _is_weekend(d):
+        d -= timedelta(days=1)
+    return d.strftime("%Y-%m-%d")
+
+def _fetch_hi_lo(day: str, start_h: int, end_h: int) -> tuple[int, float | None, float | None]:
+    """Fetch hi/lo in [start_h, end_h) UTC via Databento Historical."""
+    try:
+        from databento import Historical
+    except Exception as e:
+        print("[error] Databento SDK not available:", e)
+        return 0, None, None
+
+    api_key = os.getenv("DATABENTO_API_KEY")
+    if not api_key:
+        print("[error] DATABENTO_API_KEY is not set; cannot query data.")
+        return 0, None, None
+
+    start, end = _utc_range(day, start_h, end_h)
+    try:
+        h = Historical(api_key)
+        store = h.timeseries.get_range(
+            dataset=DATASET,
+            schema=SCHEMA,
+            symbols=SYMBOL,
+            start=start.isoformat(),
+            end=end.isoformat(),
+        )
+        df = store.to_df()
+    except Exception as e:
+        print(f"[error] Databento query failed ({start} -> {end}):", e)
+        return 0, None, None
+
+    rows = len(df)
+    if rows == 0:
+        return 0, None, None
+
+    hi = float(df["high"].max())
+    lo = float(df["low"].min())
+    if DIVISOR and DIVISOR != 1.0:
+        hi /= DIVISOR
+        lo /= DIVISOR
+    return rows, hi, lo
+
+# ---- Public API ----
+def build_levels(date: str, verbose: bool = False) -> DayLevels:
+    """
+    Build PDH/PDL from the *previous business day* RTH (13:00–20:00 UTC),
+    Asia (00–06 UTC), and London (06–09 UTC). Save to data/levels.json.
+    """
+    # Previous business day (handles Mon -> Fri, and any weekend date)
+    prev_bd = _prev_business_day_str(date)
+
+    pdh_rows, pdh, _ = _fetch_hi_lo(prev_bd, 13, 20)
+    _, _, pdl = _fetch_hi_lo(prev_bd, 13, 20)
+
+    asia_rows, asia_hi, asia_lo = _fetch_hi_lo(date, ASIA_START_UTC, ASIA_END_UTC)
+    lon_rows, lon_hi, lon_lo   = _fetch_hi_lo(date, LONDON_START_UTC, LONDON_END_UTC)
+
+    levels = DayLevels(
+        date=date,
+        pdh=pdh,
+        pdl=pdl,
+        asia_high=asia_hi,
+        asia_low=asia_lo,
+        london_high=lon_hi,
+        london_low=lon_lo,
+    )
+
+    if verbose:
+        print(f"[rows] pdh/pdl={pdh_rows} asia={asia_rows} london={lon_rows}")
+        print("[levels]", asdict(levels))
+
+    with LEVELS_PATH.open("w") as f:
+        json.dump(asdict(levels), f)
+
+    return levels
+
+def load_levels_json() -> DayLevels | None:
+    if not LEVELS_PATH.exists():
+        return None
+    try:
+        raw = json.loads(LEVELS_PATH.read_text())
+        return DayLevels(**raw)
+    except Exception as e:
+        print("[warn] failed to load levels.json:", e)
+        return None
+
+def run_live(*args, **kwargs):
+    raise NotImplementedError("run_live is not implemented in this module.")
+
+def run_replay(*args, **kwargs):
+    raise NotImplementedError("run_replay is not implemented in this module.")
+
+__all__ = ["DayLevels", "build_levels", "load_levels_json", "run_live", "run_replay"]
