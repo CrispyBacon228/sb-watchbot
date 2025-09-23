@@ -47,3 +47,47 @@ def main() -> None:
 if __name__ == "__main__":
     main()# --- FIX: import the actual build_levels function ---
 from sbwatch.app import build_levels
+
+# === LIVE COMMAND ADDED ===
+@app.command("live")
+def run_live_cmd(
+    verbose: bool = typer.Option(False, "--verbose", "-v")
+):
+    """
+    Start live mode with current strategy + levels.
+    """
+    import os
+    import subprocess
+    from datetime import datetime, timezone
+
+    day = os.environ.get("DAY")
+    if not day:
+        day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+    print(f"[live] starting live engine for {day}")
+    cmd = [
+        "python3",
+        "scripts/live_runner.py"
+    ]
+    subprocess.call(cmd)
+# === END LIVE COMMAND ===
+
+# === STATUS COMMAND ADDED ===
+@app.command("status")
+def status_cmd():
+    """
+    Show current environment + last loaded levels.json for sanity check.
+    """
+    import os, json
+    print("=== ENV ===")
+    for k in ["FRONT_SYMBOL", "DB_DATASET", "DB_SCHEMA", "DATABENTO_API_KEY"]:
+        print(f"{k}={os.environ.get(k)}")
+
+    try:
+        with open("data/levels.json") as f:
+            lv = json.load(f)
+        print("=== LEVELS ===")
+        print(json.dumps(lv, indent=2))
+    except FileNotFoundError:
+        print("levels.json not found — did you run build-levels?")
+# === END STATUS COMMAND ===
