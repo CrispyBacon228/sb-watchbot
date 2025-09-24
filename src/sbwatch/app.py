@@ -1,107 +1,218 @@
-from __future__ import annotations
-import json, os
-from pathlib import Path
-from dataclasses import dataclass, asdict
-from datetime import datetime, timedelta, timezone
-from typing import Optional
 
-# --- Types ---
-@dataclass
-class DayLevels:
-    date: str
-    pdh: Optional[float] = None
-    pdl: Optional[float] = None
-    asia_high: Optional[float] = None
-    asia_low: Optional[float] = None
-    london_high: Optional[float] = None
-    london_low: Optional[float] = None
+import os, json
 
-# --- Config ---
-DATASET = os.getenv("DB_DATASET", "GLBX.MDP3")
-SCHEMA = os.getenv("DB_SCHEMA", "ohlcv-1m")
-SYMBOL = os.getenv("FRONT_SYMBOL", "NQZ5")
 
-# London 02:00–05:00 ET => 06:00–09:00 UTC
-ASIA_START_UTC, ASIA_END_UTC = 0, 6
-LONDON_START_UTC, LONDON_END_UTC = 6, 9
-
-DATA_DIR = Path("data"); DATA_DIR.mkdir(exist_ok=True)
-LEVELS_PATH = DATA_DIR / "levels.json"
-
-# --- Helpers ---
-def _parse_day_utc(date_str: str) -> datetime:
-    return datetime.strptime(date_str, "%Y-%m-%d").replace(
-        tzinfo=timezone.utc, hour=0, minute=0, second=0, microsecond=0
-    )
-
-def _utc_range(day: str, start_h: int, end_h: int):
-    base = _parse_day_utc(day)
-    return base.replace(hour=start_h), base.replace(hour=end_h)
-
-def _is_weekend(dt_utc: datetime) -> bool:
-    return dt_utc.weekday() >= 5  # Mon=0, Sun=6
-
-def _prev_business_day_str(date_str: str) -> str:
-    d = _parse_day_utc(date_str)
-    d -= timedelta(days=1)
-    while _is_weekend(d):
-        d -= timedelta(days=1)
-    return d.strftime("%Y-%m-%d")
-
-def _fetch_hi_lo(day: str, start_h: int, end_h: int):
-    """Fetch hi/lo in [start_h, end_h) UTC via Databento Historical (no divisor scaling)."""
+def _get_databento_hist():
+    """
+    Construct a Databento Historical client in a way that works across SDK versions.
+    Tries positional key first; falls back to env-based construction.
+    """
+    import os
     try:
         from databento import Historical
     except Exception as e:
-        print("[error] Databento SDK not available:", e)
-        return 0, None, None
-    api_key = os.getenv("DATABENTO_API_KEY")
-    if not api_key:
-        print("[error] DATABENTO_API_KEY not set")
-        return 0, None, None
-    start, end = _utc_range(day, start_h, end_h)
-    try:
-        h = Historical(api_key)
-        store = h.timeseries.get_range(
-            dataset=DATASET, schema=SCHEMA, symbols=SYMBOL,
-            start=start.isoformat(), end=end.isoformat(),
-        )
-        df = store.to_df()
-    except Exception as e:
-        print(f"[error] Databento query failed ({start} -> {end}):", e)
-        return 0, None, None
-    if len(df) == 0:
-        return 0, None, None
-    return len(df), float(df["high"].max()), float(df["low"].min())
+        raise RuntimeError(f"[databento] Could not import Historical: {e}")
 
-# --- Public API ---
-def build_levels(date: str, verbose: bool = False) -> DayLevels:
-    prev_bd = _prev_business_day_str(date)
-    pdh_rows, pdh, _ = _fetch_hi_lo(prev_bd, 13, 20)
-    _, _, pdl = _fetch_hi_lo(prev_bd, 13, 20)
-    asia_rows, asia_hi, asia_lo = _fetch_hi_lo(date, ASIA_START_UTC, ASIA_END_UTC)
-    lon_rows, lon_hi, lon_lo = _fetch_hi_lo(date, LONDON_START_UTC, LONDON_END_UTC)
+    key = os.getenv("DATABENTO_API_KEY", "").strip()
+
+    # Try positional (most versions accept this).
+    if key:
+        try:
+            return Historical(key)
+        except TypeError:
+            # Fallback: rely on env only.
+            os.environ["DATABENTO_API_KEY"] = key
+
+    # Try no-arg (env based).
+    try:
+        return Historical()
+    except Exception as e:
+        raise RuntimeError(f"[databento] Could not create Historical client: {e}")
+
+
+
+def _make_db_client():
+    import os
+    try:
+        from databento import Historical
+    except Exception as e:
+        raise RuntimeError(f"[databento] Could not import Historical: {e}")
+
+    key = os.getenv("DATABENTO_API_KEY", "").strip()
+    if not key:
+        # Many SDK versions will read the env internally; still warn if empty.
+        try:
+            return Historical()  # env-based
+        except TypeError:
+            raise RuntimeError("[databento] DATABENTO_API_KEY is not set")
+
+    # Try positional first (newer/most versions)
+    try:
+        return Historical(key)
+    except TypeError:
+        # Fallback to env-based construction
+        os.environ["DATABENTO_API_KEY"] = key
+        try:
+            return Historical()
+        except Exception as e:
+            raise RuntimeError(f"[databento] Could not create Historical client: {e}")
+
+from dataclasses import dataclass, asdict
+from datetime import datetime, timedelta, time
+from zoneinfo import ZoneInfo
+from pathlib import Path
+
+# --- Robust Databento import (works across client versions) ---
+_HIST_CLS = None
+try:
+    # Newer style
+    from databento import Historical as _Historical
+    _HIST_CLS = _Historical
+except Exception:
+    try:
+        # Older style
+        from databento.historical import Historical as _Historical
+        _HIST_CLS = _Historical
+    except Exception:
+        _HIST_CLS = None
+
+
+DATA_DIR = Path("data")
+DATA_DIR.mkdir(parents=True, exist_ok=True)
+LEVELS_FILE = DATA_DIR / "levels.json"
+
+ET = ZoneInfo("America/New_York")
+UTC = ZoneInfo("UTC")
+
+
+@dataclass
+class DayLevels:
+    date: str
+    pdh: float | None = None     # Previous RTH day high (09:30-16:00 ET)
+    pdl: float | None = None     # Previous RTH day low
+    asia_high: float | None = None  # 20:00-00:00 ET
+    asia_low: float | None = None
+    london_high: float | None = None # 02:00-05:00 ET
+    london_low: float | None = None
+
+
+def _prev_business_date(d: datetime) -> datetime:
+    """Return previous business date (Mon-Fri) in ET (strip time)."""
+    x = d
+    while True:
+        x -= timedelta(days=1)
+        if x.weekday() < 5:  # 0=Mon ... 4=Fri
+            return x.replace(hour=0, minute=0, second=0, microsecond=0, tzinfo=ET)
+
+
+def _et_window_to_utc(day_et: datetime, start_hm: tuple[int,int], end_hm: tuple[int,int]) -> tuple[datetime, datetime]:
+    """Given an ET date and (start,end) hh:mm in ET, return UTC datetimes."""
+    s = day_et.replace(hour=start_hm[0], minute=start_hm[1], second=0, microsecond=0, tzinfo=ET)
+    e = day_et.replace(hour=end_hm[0], minute=end_hm[1], second=0, microsecond=0, tzinfo=ET)
+    return s.astimezone(UTC), e.astimezone(UTC)
+
+
+def _query_hi_lo(h, dataset: str, schema: str, symbol: str, start_utc: datetime, end_utc: datetime, verbose=False):
+    """Query Databento ohlcv-1m and return (hi, lo) or (None, None) if empty."""
+    store = h.timeseries.get_range(
+        dataset=dataset,
+        schema=schema,
+        symbols=symbol,
+        start=start_utc.isoformat(),
+        end=end_utc.isoformat(),
+    )
+    df = store.to_df()
+    if df.empty:
+        if verbose:
+            print(f"[rows=0] {start_utc.isoformat()} -> {end_utc.isoformat()}")
+        return None, None
+    hi = float(df["high"].max())
+    lo = float(df["low"].min())
+    if verbose:
+        print(f"[rows={len(df)}] {start_utc.isoformat()} -> {end_utc.isoformat()} hi={hi} lo={lo}")
+    return hi, lo
+
+
+def build_levels(date: str | None = None, verbose: bool = False) -> DayLevels:
+    """
+    Compute PDH/PDL (prev RTH 09:30-16:00 ET), ASIA (20:00-00:00 ET), LONDON (02:00-05:00 ET)
+    for FRONT_SYMBOL against GLBX.MDP3 + ohlcv-1m. Writes data/levels.json.
+    """
+    # --- env ---
+    api_key = os.getenv("DATABENTO_API_KEY") or os.getenv("DATABENTO_API_KEY".lower())
+    dataset = os.getenv("DB_DATASET", "GLBX.MDP3")
+    schema = os.getenv("DB_SCHEMA", "ohlcv-1m")
+    symbol = os.getenv("FRONT_SYMBOL") or os.getenv("FRONT_SYMBOL".lower())
+
+    if not api_key:
+        raise RuntimeError("DATABENTO_API_KEY is not set.")
+    if not symbol:
+        raise RuntimeError("FRONT_SYMBOL is not set (e.g., NQZ5).")
+
+    # --- date (ET) ---
+    if date:
+        # Accept YYYY-MM-DD
+        y, m, d = map(int, date.split("-"))
+        day_et = datetime(y, m, d, tzinfo=ET)
+    else:
+        # default to 'today' in ET (strip time)
+        now_et = datetime.now(ET)
+        day_et = now_et.replace(hour=0, minute=0, second=0, microsecond=0)
+
+    # --- windows in ET ---
+    # ASIA: 20:00 -> 00:00 on the same "ET day" (start is previous calendar evening)
+    asia_start_et = (day_et - timedelta(days=1)).replace(hour=20, minute=0, second=0, microsecond=0)
+    asia_end_et   = day_et.replace(hour=0,  minute=0, second=0, microsecond=0)
+
+    # LONDON: 02:00 -> 05:00 on the ET day
+    lond_start_et = day_et.replace(hour=2, minute=0, second=0, microsecond=0)
+    lond_end_et   = day_et.replace(hour=5, minute=0, second=0, microsecond=0)
+
+    # PDH/PDL: previous business day RTH 09:30 -> 16:00 ET
+    prev_et = _prev_business_date(day_et)
+    rth_start_et = prev_et.replace(hour=9, minute=30, second=0, microsecond=0)
+    rth_end_et   = prev_et.replace(hour=16, minute=0, second=0, microsecond=0)
+
+    # --- to UTC ---
+    asia_s_utc, asia_e_utc   = asia_start_et.astimezone(UTC), asia_end_et.astimezone(UTC)
+    lond_s_utc, lond_e_utc   = lond_start_et.astimezone(UTC), lond_end_et.astimezone(UTC)
+    rth_s_utc,  rth_e_utc    = rth_start_et.astimezone(UTC), rth_end_et.astimezone(UTC)
+
+    if verbose:
+        print("== WINDOWS (ET -> UTC) ==")
+        print(f"ASIA   {asia_start_et} -> {asia_end_et}    | {asia_s_utc} -> {asia_e_utc}")
+        print(f"LONDON {lond_start_et} -> {lond_end_et}    | {lond_s_utc} -> {lond_e_utc}")
+        print(f"PDH/PDL(prev RTH) {rth_start_et} -> {rth_end_et} | {rth_s_utc} -> {rth_e_utc}")
+
+    # --- Databento Historical ---
+    if _HIST_CLS is None:
+        raise RuntimeError("Databento Historical client not importable. Upgrade/install 'databento' package.")
+    h = _get_databento_hist()
+
+    # --- queries ---
+    asia_hi, asia_lo     = _query_hi_lo(h, dataset, schema, symbol, asia_s_utc,  asia_e_utc,  verbose)
+    london_hi, london_lo = _query_hi_lo(h, dataset, schema, symbol, lond_s_utc,  lond_e_utc,  verbose)
+    pdh, pdl             = _query_hi_lo(h, dataset, schema, symbol, rth_s_utc,   rth_e_utc,   verbose)
 
     levels = DayLevels(
-        date=date, pdh=pdh, pdl=pdl,
-        asia_high=asia_hi, asia_low=asia_lo,
-        london_high=lon_hi, london_low=lon_lo,
+        date = day_et.date().isoformat(),
+        pdh  = pdh,
+        pdl  = pdl,
+        asia_high   = asia_hi,
+        asia_low    = asia_lo,
+        london_high = london_hi,
+        london_low  = london_lo,
     )
-    if verbose:
-        print(f"[rows] pdh/pdl={pdh_rows} asia={asia_rows} london={lon_rows}")
-        print("[levels]", asdict(levels))
-    LEVELS_PATH.write_text(json.dumps(asdict(levels)))
+    # write file
+    with open(LEVELS_FILE, "w") as f:
+        json.dump(asdict(levels), f)
     return levels
 
-def load_levels_json() -> DayLevels | None:
-    if not LEVELS_PATH.exists():
-        return None
-    try:
-        return DayLevels(**json.loads(LEVELS_PATH.read_text()))
-    except Exception as e:
-        print("[warn] failed to load levels.json:", e)
-        return None
 
-def run_live(*a, **k): raise NotImplementedError
-def run_replay(*a, **k): raise NotImplementedError
-__all__ = ["DayLevels", "build_levels", "load_levels_json", "run_live", "run_replay"]
+def load_levels_json() -> DayLevels:
+    if not LEVELS_FILE.exists():
+        raise FileNotFoundError(f"{LEVELS_FILE} does not exist. Run build_levels first.")
+    with open(LEVELS_FILE) as f:
+        d = json.load(f)
+    return DayLevels(**d)
+
