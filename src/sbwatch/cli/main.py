@@ -1,59 +1,9 @@
 from __future__ import annotations
-import os, json
 import typer
-from sbwatch.core.levels import DayLevels
+from sbwatch.cli.levels_cmd import app as levels_app
 
-app = typer.Typer(help="sbwatch: AI trading alert system")
-
-@app.command("check-env")
-def check_env() -> None:
-    keys = (
-        "DATABENTO_API_KEY",
-        "DB_DATASET",
-        "DB_SCHEMA",
-        "FRONT_SYMBOL",
-        "PRICE_DIVISOR",
-        "DISCORD_WEBHOOK_URL",
-    )
-    for k in keys:
-        print(f"{k}={os.getenv(k,'')}")
-
-@app.command("replay")
-def replay(date: str) -> None:
-    # placeholder; not needed for levels writing
-    typer.echo(f"[replay] stub for {date}")
-
-@app.command("build-levels")
-def build_levels_cmd(date: str) -> None:
-    """Write Asia/London session levels JSON (drop pdh/pdl)."""
-    out = {
-        "date": date,
-        "asia_high": None,
-        "asia_low": None,
-        "london_high": None,
-        "london_low": None,
-    }
-    import os, json
-    os.makedirs("data", exist_ok=True)
-    with open("data/levels.json", "w") as f:
-        json.dump(out, f)
-    print(f"[sbwatch] built levels {out}")
-
-def main() -> None:
-    app()
+app = typer.Typer(no_args_is_help=True)
+app.add_typer(levels_app, name="levels")
 
 if __name__ == "__main__":
-    main()
-
-
-def _load_levels_json():
-    import json, os
-    try:
-        with open(os.path.join("data","levels.json"), "r") as f:
-            d = json.load(f)
-        # Only keep fields DayLevels knows about
-        fields = DayLevels.__annotations__.keys()
-        clean = {k: d.get(k) for k in fields}
-        return DayLevels(**clean)
-    except Exception:
-        return None
+    app()
