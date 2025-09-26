@@ -1,5 +1,5 @@
 from __future__ import annotations
-import os, time, os.path
+import os, time, os.path, csv
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone, time as dtime
 from zoneinfo import ZoneInfo
@@ -28,6 +28,7 @@ TZ_ET = ZoneInfo("America/New_York")
 
 LEVELS_RELOAD_SEC = int(os.getenv("LEVELS_RELOAD_SEC", "60"))
 HEARTBEAT_MIN = int(os.getenv("HEARTBEAT_MIN", "0"))
+ALERTS_LOG = os.getenv("ALERTS_LOG", "./out/alerts_live.csv")
 
 @dataclass
 class State:
@@ -59,7 +60,7 @@ def _fld(rec, a, b=None):
 def _hlc_scaled(rec):
     h = _fld(rec, "high", "h"); l = _fld(rec, "low", "l"); c = _fld(rec, "close", "c")
     if h is None and isinstance(rec, dict):
-        h = rec.get("high", rec.get("h")); l = rec.get("low", rec.get("l")); c = rec.get("close", rec.get("c"))
+        h = rec.get("high", rec.get("h")); l = rec.get("low",  rec.get("l")); c = rec.get("close", rec.get("c"))
     if h is None or l is None: raise TypeError(f"Unexpected row type: {type(rec)} has no high/low")
     if c is None: c = (float(h) + float(l)) / 2.0
     return float(h)/DIV, float(l)/DIV, float(c)/DIV
@@ -71,8 +72,18 @@ def _should_alert(state: State, key: str) -> bool:
     if now - last < COOLDOWN_SEC: return False
     state.last_alert[key] = now; return True
 
-def _et_date_iso() -> str:
-    return datetime.now(TZ_ET).date().isoformat()
+def _log_alert(kind: str, price: float, level: float):
+    """Append alert to CSV (UTC timestamp, kind, price, level)."""
+    try:
+        os.makedirs(os.path.dirname(ALERTS_LOG), exist_ok=True)
+        newfile = not os.path.exists(ALERTS_LOG)
+        with open(ALERTS_LOG, "a", newline="") as f:
+            w = csv.writer(f)
+            if newfile:
+                w.writerow(["ts_utc","symbol","kind","price","level"])
+            w.writerow([datetime.now(timezone.utc).isoformat(), SYMBOL, kind, f"{price:.2f}", f"{level:.2f}"])
+    except Exception as e:
+        logger.warning("failed to write alert CSV: {}", e)
 
 def run_live() -> None:
     from sbwatch.adapters.discord import send_discord
@@ -106,7 +117,7 @@ def run_live() -> None:
             now = time.time()
             if now - last_reload_check >= LEVELS_RELOAD_SEC:
                 last_reload_check = now
-                et_now = _et_date_iso()
+                et_now = datetime.now(TZ_ET).date().isoformat()
                 try:
                     mtime = os.path.getmtime(LEVELS_PATH)
                 except FileNotFoundError:
@@ -143,13 +154,15 @@ def run_live() -> None:
             }
             for name, hit in signals.items():
                 if hit and _should_alert(state, name):
-                    label = name.replace("_REJECT","")
-                    arrow = "🟣" if "H" in name else "🟠"
                     level_val = {
-                        "PDH": lv.pdh, "PDL": lv.pdl,
-                        "ASIA_H": lv.asia_high, "ASIA_L": lv.asia_low,
-                        "LON_H": lv.london_high, "LON_L": lv.london_low
-                    }[label]
+                        "PDH_REJECT": lv.pdh, "PDL_REJECT": lv.pdl,
+                        "ASIA_H_REJECT": lv.asia_high, "ASIA_L_REJECT": lv.asia_low,
+                        "LON_H_REJECT": lv.london_high, "LON_L_REJECT": lv.london_low
+                    }[name]
+                    _log_alert(name, c, level_val)
+                    from sbwatch.adapters.discord import send_discord
+                    arrow = "🟣" if "H_" in name else "🟠"
+                    label = name.replace("_REJECT","").replace("_","/")
                     send_discord(f"{arrow} {SYMBOL} {label} reject · wick ≥{TOL_TICKS}t, close back in · "
                                  f"close {c:.2f} · level {level_val:.2f}")
 
@@ -165,10 +178,13 @@ def run_live() -> None:
                 }
                 for name, hit in crosses.items():
                     if hit and _should_alert(state, name):
-                        arrow = "▲" if name.endswith("UP") else "▼"
                         lvlname = name.split("_")[0]
+                        level_val = getattr(lv, lvlname.lower())
+                        _log_alert(name, last_price, level_val)
+                        arrow = "▲" if name.endswith("UP") else "▼"
+                        from sbwatch.adapters.discord import send_discord
                         send_discord(f"⚡ {SYMBOL} {arrow} cross {lvlname} at {last_price:.2f} "
-                                     f"(PDH {lv.pdh:.2f} / PDL {lv.pdl:.2f})")
+                                     f"(level {level_val:.2f})")
 
             state.prev_price = last_price
             time.sleep(POLL_SECONDS)
