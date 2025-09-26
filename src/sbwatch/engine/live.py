@@ -6,6 +6,8 @@ from zoneinfo import ZoneInfo
 from loguru import logger
 from sbwatch.adapters.databento import ohlcv_range, clamp_end
 from sbwatch.strategy.ict import ICTDetector
+from sbwatch.util.alerts import fmt_ict_entry, fmt_tp
+from sbwatch.util.tpwatch import TPWatcher
 from sbwatch.util.alerts import append_alert, alerts_log_path
 
 DATASET = os.getenv("DB_DATASET","GLBX.MDP3")
@@ -46,6 +48,7 @@ def run_live():
     state = State(last_alert={})
     from sbwatch.util.gate import Gate
     gate = Gate()
+    tpw = TPWatcher(symbol, send_discord)
     ict = ICTDetector()
 
     while True:
