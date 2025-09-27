@@ -137,7 +137,7 @@ def run_replay(date_et: str, out_dir: str = "./out", csv_path: Optional[str] = N
             rows_csv.append((ts, o, h, l, c))
     else:
         cur_min = None
-        for r in (_rows_for_et_date(date_et) or []):
+        for r in _rows_for_et_date(date_et):
             ts_attr = getattr(r, "ts_recv", None) or getattr(r, "ts_event", None)
             ts = datetime.fromtimestamp(float(ts_attr)/1e9, tz=timezone.utc) if ts_attr else None
             o,h,l,c = _ohlc_scaled_from_dbn(r)
@@ -212,31 +212,34 @@ def run_replay(date_et: str, out_dir: str = "./out", csv_path: Optional[str] = N
 
             # - ICT entries (only when requested)
             ict_sigs = []
-            if not wick_only and in_sb_am(ts):
+            if not wick_only and _in_sb_am(ts):
                 ict_sigs = ict.add_bar(ts, o, h, l, c)
             for sig in ict_sigs:
-                # Skip if an active position already exists
-                if pos is not None:
-                    continue
-                # Enforce cooldown since last exit
-                if last_exit_ts is not None and (ts - last_exit_ts).total_seconds() < ENTRY_COOLDOWN_SEC:
-                    continue
-                # De-dup via gate object
-                if not gate.allow(sig.side, ts, sig.entry, getattr(sig, "sweep_id", None)):
-                    continue
-                # Open a new trade
-                pos = Position(sig.side, sig.entry, sig.stop, sig.tp1, sig.tp2, ts)
-                entry_idx = bar_idx
-                row = _signal_row(ts, f"ICT_{sig.side.upper()}_ENTRY", sig.entry, sig.stop)
-                w.writerow(row)
-                # Entries-only file
-                newfile = not Path(entries_only_path).exists()
-                with open(entries_only_path, "a", newline="") as ef:
-                    ew = csv.writer(ef)
-                    if newfile:
-                        ew.writerow(["time_utc","signal","price","level"])
-                    ew.writerow(row)
-            prev_price = c
+                    if pos is not None: continue
+                    if last_exit_ts is not None and (ts - last_exit_ts).total_seconds() < ENTRY_COOLDOWN_SEC: continue
+                    if not gate.allow(sig.side, ts, sig.entry, getattr(sig,"sweep_id",None)): continue
+                        # 1) must be flat; 2) cooldown since last exit; 3) gate de-dup
+                        if pos is not None:
+                            continue
+                        if last_exit_ts is not None and (ts - last_exit_ts).total_seconds() < ENTRY_COOLDOWN_SEC:
+                            continue
+                        if not gate.allow(sig.side, ts, sig.entry, getattr(sig, "sweep_id", None)):
+                            continue
+
+                        # open position
+                        pos = Position(sig.side, sig.entry, sig.stop, sig.tp1, sig.tp2, ts)
+                        entry_idx = bar_idx
+                        row = _signal_row(ts, f"ICT_{sig.side.upper()}_ENTRY", sig.entry, sig.stop)
+                        w.writerow(row)
+
+                        # entries-only file
+                        newfile = not Path(entries_only_path).exists()
+                        with open(entries_only_path, "a", newline="") as ef:
+                            ew = csv.writer(ef)
+                            if newfile:
+                                ew.writerow(["time_utc","signal","price","level"])
+                            ew.writerow(row)
+
             prev_price = c
 
     logger.info("Replay complete → {}", out_path)

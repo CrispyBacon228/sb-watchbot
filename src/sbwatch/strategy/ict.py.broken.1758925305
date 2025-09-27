@@ -1,0 +1,141 @@
+from __future__ import annotations
+from dataclasses import dataclass
+from typing import Deque, List, Literal, Optional
+from collections import deque
+from datetime import datetime, timedelta
+import os
+
+Side = Literal["bull","bear"]
+
+@dataclass
+class Bar:
+    ts: datetime
+    o: float; h: float; l: float; c: float
+
+@dataclass
+class Sweep:
+    ts: datetime
+    side: Side
+    ref_level: float   # rolling high/low that was taken
+    sweep_price: float
+
+@dataclass
+class FVG:
+    ts: datetime
+    side: Side
+    top: float
+    bot: float
+    expire: datetime
+
+@dataclass
+class Entry:
+    ts: datetime
+    side: Side
+    entry: float
+    stop: float
+    tp1: float
+    tp2: float
+    context: str
+    sweep_id: int
+
+class ICTDetector:
+    """
+    Rolling sweep + 3-candle FVG; entry on revisit into the gap.
+    - Sweep (bear): high >= rolling_max(prev N) + tol
+      Sweep (bull): low  <= rolling_min(prev N) - tol
+    - FVG (3-candle):
+        bull: low[n] > high[n-2] + gap
+        bear: high[n] < low[n-2] - gap
+    - Entry: wick overlaps the gap box after a matching-side sweep
+    """
+    def __init__(self):
+        # knobs (read at init so env edits apply)
+        self.tick_size        = float(os.getenv("TICK_SIZE","0.25"))
+        self.gap_ticks        = int(os.getenv("MIN_GAP_TICKS","2"))
+        self.sweep_ticks      = int(os.getenv("SWEEP_TOL_TICKS","2"))
+        self.roll_lookback    = int(os.getenv("SWING_LOOKBACK","5"))   # reused as sweep window
+        self.fvg_max_age_min  = int(os.getenv("FVG_MAX_AGE_MIN","20"))
+        os.getenv("REVISIT_DELAY_BARS","2")
+        self.rr_tp1           = float(os.getenv("RR_TP1","1.0"))
+        self.rr_tp2           = float(os.getenv("RR_TP2","2.0"))
+
+        self.bars:   Deque[Bar]   = deque(maxlen=self.roll_lookback*8)
+        self.fvgs:   Deque[FVG]   = deque(maxlen=200)
+        self.sweeps: Deque[Sweep] = deque(maxlen=200)
+
+        # debug counters
+        self.stats_sweeps = 0
+        self.stats_fvgs   = 0
+        self.stats_entries= 0
+        self._sweep_id = 0  # increments each time we record a sweep
+
+        # ---------- public ----------
+    def add_bar(self, ts: datetime, o: float, h: float, l: float, c: float) -> List[Entry]:
+        b = Bar(ts,o,h,l,c)
+        self.bars.append(b)
+        self._gc(ts)
+        self._detect_rolling_sweep(ts, h, l)
+        self._detect_fvg(ts)
+        sigs = self._check_entries(ts, h, l, c)
+        self.stats_entries += len(sigs)
+        return sigs
+
+    # ---------- internal ----------
+    def _gc(self, now: datetime):
+        self.fvgs   = deque([f for f in self.fvgs   if now <= f.expire], maxlen=200)
+        self.sweeps = deque([s for s in self.sweeps if (now - s.ts) <= timedelta(minutes=60)], maxlen=200)
+
+    def _detect_rolling_sweep(self, ts: datetime, h: float, l: float):
+        if len(self.bars) <= self.roll_lookback:
+            return
+        # window excludes current bar
+        window = list(self.bars)[-1-self.roll_lookback:-1]
+        maxH = max(b.h for b in window)
+        minL = min(b.l for b in window)
+        tol  = self.sweep_ticks * self.tick_size
+        if h >= maxH + tol:
+            self._sweep_id += 1
+            self.sweeps.append(Sweep(ts, "bear", maxH, h)); self.stats_sweeps += 1
+        if l <= minL - tol:
+            self._sweep_id += 1
+            self.sweeps.append(Sweep(ts, "bull", minL, l)); self.stats_sweeps += 1
+
+    def _detect_fvg(self, ts: datetime):
+        if len(self.bars) < 3: return
+        b0,b1,b2 = self.bars[-1], self.bars[-2], self.bars[-3]
+        gap = self.gap_ticks * self.tick_size
+        # bullish gap
+        if b0.l > b2.h + gap:
+            self.fvgs.append(FVG(ts, "bull", top=b2.h, bot=b0.l, expire=ts + timedelta(minutes=self.fvg_max_age_min)))
+            self.stats_fvgs += 1
+        # bearish gap
+        if b0.h < b2.l - gap:
+            self.fvgs.append(FVG(ts, "bear", top=b0.h, bot=b2.l, expire=ts + timedelta(minutes=self.fvg_max_age_min)))
+            self.stats_fvgs += 1
+
+    def _check_entries(self, ts: datetime, h: float, l: float, c: float) -> List[Entry]:
+        out: List[Entry] = []
+        if not self.fvgs or not self.sweeps: return out
+        last = self.sweeps[-1]
+        for f in list(self.fvgs):
+            if ts > f.expire or f.side != last.side:
+                continue
+            # revisit: wick overlaps gap box
+            if not (l <= f.bot and h >= f.top):
+                continue
+            if f.side == "bull":
+                entry = max(f.top, min(c, f.bot))
+                stop  = min(last.sweep_price, f.top) - self.tick_size
+                r = entry - stop
+                if r > 0:
+                    out.append(Entry(ts,"bull", entry, stop, entry + self.rr_tp1*r, entry + self.rr_tp2*r,
+                                     "Low sweep + Bullish FVG revisit", self._sweep_id))
+            else:
+                entry = min(f.bot, max(c, f.top))
+                stop  = max(last.sweep_price, f.bot) + self.tick_size
+                r = stop - entry
+                if r > 0:
+                    out.append(Entry(ts,"bear", entry, stop, entry - self.rr_tp1*r, entry - self.rr_tp2*r,
+                                     "High sweep + Bearish FVG revisit", self._sweep_id))
+            self.fvgs.remove(f)
+        return out

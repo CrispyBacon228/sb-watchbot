@@ -93,3 +93,11 @@ def run_live():
         except Exception as e:
             logger.exception("live error: {}", e)
             time.sleep(max(POLL_SECONDS,5))
+TZ_ET = ZoneInfo("America/New_York")
+
+def _in_sb_am(ts_utc: datetime) -> bool:
+    s = int(os.getenv("SB_AM_START_HH","10"))  # default 10:00 ET
+    e = int(os.getenv("SB_AM_END_HH","11"))   # default 11:00 ET
+    t = ts_utc.astimezone(TZ_ET)
+    return s <= t.hour < e
+
