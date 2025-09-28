@@ -4,3 +4,29 @@ __pycache__/
 .env
 .env.*
 data/
+# Backups & caches
+*.bak
+*.bak.*
+__pycache__/
+*.pyc
+*.pyo
+
+# Replay outputs
+/out/*.csv
+
+# Local venv
+.venv/
+# Backups & caches
+*.bak
+*.bak.*
+__pycache__/
+*.pyc
+*.pyo
+
+# Replay outputs
+/out/*.csv
+
+# Local venv
+.venv/
+*.bak
+__pycache__/
