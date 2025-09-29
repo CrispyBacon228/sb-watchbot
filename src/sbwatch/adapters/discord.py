@@ -1,27 +1,25 @@
 from __future__ import annotations
-import os, requests
-from loguru import logger
+import os, json, time
+import requests
+from typing import Optional
 
-def _mask(url: str, keep: int = 10) -> str:
-    if not url: return ""
-    if len(url) <= keep: return url
-    return url[:keep] + "..."
+WEBHOOK = os.getenv("DISCORD_WEBHOOK_URL", "").strip()
 
-def send_discord(content: str) -> None:
-    """
-    Send a simple Discord message.
-    - Reads DISCORD_WEBHOOK_URL at call time (no stale cache).
-    - If missing or malformed, logs a warning and returns without error.
-    """
-    url = os.getenv("DISCORD_WEBHOOK_URL", "").strip()
-    if not url or "REPLACE_WITH_YOUR_DISCORD_WEBHOOK" in url or not url.startswith(("http://","https://")):
-        logger.warning("Discord webhook not set or invalid; skipping send.")
-        return
+def send_discord(content: str, username: str = "SB Watchbot", embeds: Optional[list] = None) -> bool:
+    """Post a message to Discord webhook. Returns True on success."""
+    if not WEBHOOK:
+        print("[discord] No DISCORD_WEBHOOK_URL set; skipping send.")
+        return False
+    payload = {"content": content}
+    if username:
+        payload["username"] = username
+    if embeds:
+        payload["embeds"] = embeds
     try:
-        r = requests.post(url, json={"content": content}, timeout=10)
-        if r.status_code >= 300:
-            logger.error("Discord POST failed {}: {}", r.status_code, r.text[:200])
-        else:
-            logger.info("Discord OK → {}", _mask(url))
+        r = requests.post(WEBHOOK, json=payload, timeout=10)
+        if r.status_code // 100 == 2:
+            return True
+        print(f"[discord] Non-2xx: {r.status_code} -> {r.text[:200]}")
     except Exception as e:
-        logger.exception("Discord send failed: {}", e)
+        print(f"[discord] Exception: {e}")
+    return False
