@@ -1,5 +1,6 @@
 from pathlib import Path
 import json
+import os
 import csv as csv_mod  # avoid shadowing param name "csv"
 
 def run_replay(*, date=None, date_et=None,
