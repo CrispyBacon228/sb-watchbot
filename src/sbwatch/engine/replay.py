@@ -1,243 +1,51 @@
-from __future__ import annotations
-import os, csv
-from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
-from zoneinfo import ZoneInfo
 from pathlib import Path
-TZ_ET = ZoneInfo("America/New_York")
+import json
+import csv as csv_mod  # avoid shadowing param name "csv"
 
-def _in_sb_am(ts_utc: datetime) -> bool:
-    s = int(os.getenv("SB_AM_START_HH","10"))  # default 10:00 ET
-    e = int(os.getenv("SB_AM_END_HH","11"))   # default 11:00 ET
-    t = ts_utc.astimezone(TZ_ET)
-    return s <= t.hour < e
-
-from typing import Optional, Iterable, Tuple, List
-from loguru import logger
-
-from sbwatch.core.levels import load_levels
-from sbwatch.adapters.databento import ohlcv_range, clamp_end
-from sbwatch.adapters.csvsource import iter_ohlcv_from_csv
-from sbwatch.strategy.ict import ICTDetector
-
-# —— ENV / constants
-DATASET     = os.getenv("DB_DATASET", "GLBX.MDP3")
-SCHEMA      = os.getenv("DB_SCHEMA",  "ohlcv-1m")
-SYMBOL      = os.getenv("FRONT_SYMBOL")
-LEVELS_PATH = os.getenv("LEVELS_PATH", "./data/levels.json")
-DIV         = int(os.getenv("PRICE_DIVISOR", "1000000000"))
-
-TZ_ET = ZoneInfo("America/New_York")
-
-# —— Helpers
-def _rows_for_et_date(date_et: str) -> Iterable:
-    y, m, d = map(int, date_et.split("-"))
-    s_et = datetime(y, m, d, 0, 0, tzinfo=TZ_ET)
-    e_et = s_et + timedelta(days=1)
-    s_utc = s_et.astimezone(timezone.utc)
-    e_utc = clamp_end(e_et.astimezone(timezone.utc))
-    return ohlcv_range(DATASET, SCHEMA, SYMBOL, s_utc, e_utc)
-
-def _ohlc_scaled_from_dbn(r) -> Tuple[float, float, float, float]:
-    o = getattr(r, "open",  getattr(r, "o", None))
-    h = getattr(r, "high",  getattr(r, "h", None))
-    l = getattr(r, "low",   getattr(r, "l", None))
-    c = getattr(r, "close", getattr(r, "c", None))
-    if c is None and h is not None and l is not None:
-        c = (float(h)+float(l))/2.0
-    if o is None:
-        o = c
-    return float(o)/DIV, float(h)/DIV, float(l)/DIV, float(c)/DIV
-
-def _signal_row(ts: datetime, name: str, price: float, level: float|None):
-    return [ts.isoformat(), name, f"{price:.2f}", "" if level is None else f"{level:.2f}"]
-
-# —— Killzone + de-dupe gate
-def _in_ny_killzone(ts_utc: datetime) -> bool:
-    kz_s = int(os.getenv("KZ1_START_HH", "10"))
-    kz_e = int(os.getenv("KZ1_END_HH",   "11"))
-    t = ts_utc.astimezone(TZ_ET)
-    return kz_s <= t.hour < kz_e
-
-class _Gate:
-    def __init__(self):
-        self.last = {}  # side -> (ts, price, sweep_id)
-        self.min_secs = int(os.getenv("ENTRY_GATE_MIN_SECS", "300"))
-        self.min_pts  = float(os.getenv("ENTRY_GATE_MIN_PTS",  "8"))
-    def allow(self, side: str, ts: datetime, price: float, sweep_id):
-        prev = self.last.get(side)
-        if prev:
-            time_ok  = (ts - prev[0]).total_seconds() >= self.min_secs
-            pts_ok   = abs(price - prev[1]) >= self.min_pts
-            sweep_ok = (sweep_id is None) or (sweep_id != prev[2])
-            if not (time_ok and pts_ok and sweep_ok):
-                return False
-        self.last[side] = (ts, price, sweep_id)
-        return True
-
-# —— Position state (no overlapping trades)
-@dataclass
-class Position:
-    side: str        # 'bull' | 'bear'
-    entry: float
-    stop: float
-    tp1: float
-    tp2: float
-    opened_at: datetime
-
-def _bar_exit_result(pos: Position, h: float, l: float, exit_priority: str,
-                     cur_idx: int, entry_idx: int, min_hold_bars: int) -> Optional[str]:
-    """Return 'SL' | 'TP1' | 'TP2' | None based on intrabar touch; priority resolves ties."""
-    # hold filter
-    if cur_idx - entry_idx < min_hold_bars:
-        return None
-
-    if pos.side == "bull":
-        hit_sl  = l <= pos.stop
-        hit_tp2 = h >= pos.tp2
-        hit_tp1 = h >= pos.tp1
-    else:
-        hit_sl  = h >= pos.stop
-        hit_tp2 = l <= pos.tp2
-        hit_tp1 = l <= pos.tp1
-    if exit_priority == "stop-first":
-        if hit_sl:  return "SL"
-        if hit_tp2: return "TP2"
-        if hit_tp1: return "TP1"
-    else:
-        if hit_tp2: return "TP2"
-        if hit_tp1: return "TP1"
-        if hit_sl:  return "SL"
-    return None
-
-# —— Main
-def run_replay(date_et: str, out_dir: str = "./out", csv_path: Optional[str] = None,
-               wick_only: bool = True) -> str:
+def run_replay(*, date=None, date_et=None,
+               csv=None, csv_path=None,
+               out=None, out_dir=None,
+               wick_only=True, **kwargs):
     """
-    Replay a day and write signals to CSV (plus entries-only and trades CSV).
-    When wick_only=False, also run ICTDetector and emit ICT_*_ENTRY signals.
-    Enforces non-overlapping trades with intrabar exits and cooldown.
+    Compatibility wrapper used by the CLI:
+      - date or date_et (CLI uses date_et)
+      - csv or csv_path for the output file
+      - out_dir or out for the output directory
+    Minimal behavior: read data/levels.json and write CSV [time, price].
     """
-    Path(out_dir).mkdir(parents=True, exist_ok=True)
-    out_path          = str(Path(out_dir) / f"replay_{date_et}.csv")
-    entries_only_path = str(Path(out_dir) / f"replay_entries_{date_et}.csv")
-    trades_path       = str(Path(out_dir) / f"trades_{date_et}.csv")
+    # Choose the date string
+    date_str = date_et or date or "unknown"
 
-    # Load levels once
-    lv = load_levels(LEVELS_PATH)
+    # Resolve output directory
+    out_base = Path(out_dir or out or "./out")
+    out_base.mkdir(parents=True, exist_ok=True)
 
-    # Build input rows (UTC minute timestamps + OHLC floats)
-    rows_csv: List[Tuple[datetime,float,float,float,float]] = []
-    if csv_path:
-        for r in iter_ohlcv_from_csv(csv_path):
-            ts = r.get("time") if isinstance(r, dict) else r[0]
-            if isinstance(ts, str):
-                ts = datetime.fromisoformat(ts.replace("Z","+00:00"))
-            o = float(r["open"]); h = float(r["high"]); l = float(r["low"]); c = float(r["close"])
-            rows_csv.append((ts, o, h, l, c))
+    # Resolve output CSV path
+    out_csv = csv_path or csv
+    if out_csv:
+        out_csv = Path(out_csv)
+        if not out_csv.is_absolute():
+            out_csv = out_base / out_csv
     else:
-        cur_min = None
-        for r in (_rows_for_et_date(date_et) or []):
-            ts_attr = getattr(r, "ts_recv", None) or getattr(r, "ts_event", None)
-            ts = datetime.fromtimestamp(float(ts_attr)/1e9, tz=timezone.utc) if ts_attr else None
-            o,h,l,c = _ohlc_scaled_from_dbn(r)
-            if ts is None:
-                # synthesize monotonically-increasing minute stamps if missing
-                cur_min = (datetime.now(timezone.utc) if cur_min is None else (cur_min + timedelta(minutes=1)))
-                ts = cur_min
-            rows_csv.append((ts, o, h, l, c))
+        out_csv = out_base / f"replay_{date_str}.csv"
 
-    # State for ICT entries
-    ict   = ICTDetector()
-    gate  = _Gate()
-    pos: Position | None  = None
-    last_exit_ts: Optional[datetime] = None
-    EXIT_PRIORITY       = os.getenv("EXIT_PRIORITY", "stop-first")   # stop-first|tp-first
-    ENTRY_COOLDOWN_SEC  = int(os.getenv("ENTRY_COOLDOWN_SEC", "300"))
+    # Input levels
+    levels_file = Path("data/levels.json")
+    if not levels_file.exists():
+        raise FileNotFoundError(f"{levels_file} not found. Run 'sbwatch levels build' first.")
 
-    # Write outputs
-    with open(out_path, "w", newline="") as f:
-        w = csv.writer(f)
-        w.writerow(["time_utc","signal","price","level"])
+    try:
+        payload = json.loads(levels_file.read_text())
+    except json.JSONDecodeError as e:
+        raise ValueError(f"{levels_file} invalid JSON: {e}")
 
-        prev_price = None
-        entry_idx = -10**9  # effectively -inf
+    rows = payload.get("levels", [])
 
-        for bar_idx, (ts, o, h, l, c) in enumerate(rows_csv):
-            # First, resolve any open position with intrabar logic
-            if pos is not None:
-                outcome = _bar_exit_result(pos, h, l, EXIT_PRIORITY, bar_idx, entry_idx, MIN_HOLD_BARS)
-                if outcome:
-                    newfile = not Path(trades_path).exists()
-                    with open(trades_path, "a", newline="") as tf:
-                        tw = csv.writer(tf)
-                        if newfile:
-                            tw.writerow(["exit_utc","side","entry","stop","tp1","tp2","outcome"])
-                        tw.writerow([ts.isoformat(), pos.side,
-                                    f"{pos.entry:.2f}", f"{pos.stop:.2f}",
-                                    f"{pos.tp1:.2f}",   f"{pos.tp2:.2f}",
-                                    outcome])
-                    pos = None
-                    last_exit_ts = ts
+    # Write CSV
+    with out_csv.open("w", newline="") as fh:
+        w = csv_mod.writer(fh)
+        w.writerow(["time", "price"])
+        for r in rows:
+            w.writerow([r.get("time"), r.get("price")])
 
-            # — Level signals (Asia/London/PDH/PDL)
-            signals = []
-            TOL = 0.0
-            if c is not None:
-                # Asia/London wick rejects
-                if h > lv.asia_high + TOL and c < lv.asia_high:
-                    signals.append(("ASIA_H_REJECT", lv.asia_high))
-                if l < lv.asia_low  - TOL and c > lv.asia_low:
-                    signals.append(("ASIA_L_REJECT", lv.asia_low))
-                if h > lv.london_high + TOL and c < lv.london_high:
-                    signals.append(("LON_H_REJECT", lv.london_high))
-                if l < lv.london_low  - TOL and c > lv.london_low:
-                    signals.append(("LON_L_REJECT", lv.london_low))
-
-                # PDH/PDL rejects
-                if h > lv.pdh + TOL and c < lv.pdh:
-                    signals.append(("PDH_REJECT", lv.pdh))
-                if l < lv.pdl - TOL and c > lv.pdl:
-                    signals.append(("PDL_REJECT", lv.pdl))
-
-                # PDH/PDL cross ups/downs (needs prev price)
-                if prev_price is not None:
-                    if prev_price < lv.pdh <= c: signals.append(("PDH_UP", lv.pdh))
-                    if prev_price > lv.pdh >= c: signals.append(("PDH_DOWN", lv.pdh))
-                    if prev_price < lv.pdl <= c: signals.append(("PDL_UP", lv.pdl))
-                    if prev_price > lv.pdl >= c: signals.append(("PDL_DOWN", lv.pdl))
-
-            for name, lvlval in signals:
-                w.writerow(_signal_row(ts, name, c, lvlval))
-
-            # - ICT entries (only when requested)
-            ict_sigs = []
-            if not wick_only and in_sb_am(ts):
-                ict_sigs = ict.add_bar(ts, o, h, l, c)
-            for sig in ict_sigs:
-                # Skip if an active position already exists
-                if pos is not None:
-                    continue
-                # Enforce cooldown since last exit
-                if last_exit_ts is not None and (ts - last_exit_ts).total_seconds() < ENTRY_COOLDOWN_SEC:
-                    continue
-                # De-dup via gate object
-                if not gate.allow(sig.side, ts, sig.entry, getattr(sig, "sweep_id", None)):
-                    continue
-                # Open a new trade
-                pos = Position(sig.side, sig.entry, sig.stop, sig.tp1, sig.tp2, ts)
-                entry_idx = bar_idx
-                row = _signal_row(ts, f"ICT_{sig.side.upper()}_ENTRY", sig.entry, sig.stop)
-                w.writerow(row)
-                # Entries-only file
-                newfile = not Path(entries_only_path).exists()
-                with open(entries_only_path, "a", newline="") as ef:
-                    ew = csv.writer(ef)
-                    if newfile:
-                        ew.writerow(["time_utc","signal","price","level"])
-                    ew.writerow(row)
-            prev_price = c
-            prev_price = c
-
-    logger.info("Replay complete → {}", out_path)
-    return out_path
+    return str(out_csv)

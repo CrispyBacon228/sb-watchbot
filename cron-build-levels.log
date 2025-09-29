@@ -1,10 +1,5 @@
-Traceback (most recent call last):
-  File "/opt/sb-watchbot/.venv/bin/sbwatch", line 3, in <module>
-    from sbwatch.cli.main import app
-  File "/opt/sb-watchbot/src/sbwatch/cli/main.py", line 4, in <module>
-    from sbwatch.cli import levels_cmd, live_cmd, notify_cmd, replay_cmd, status_cmd
-  File "/opt/sb-watchbot/src/sbwatch/cli/replay_cmd.py", line 4, in <module>
-    from sbwatch.engine.replay import run_replay
-  File "/opt/sb-watchbot/src/sbwatch/engine/replay.py", line 227
-    if pos is not None:
-IndentationError: unexpected indent
+Usage: sbwatch [OPTIONS] COMMAND [ARGS]...
+Try 'sbwatch --help' for help.
+╭─ Error ──────────────────────────────────────────────────────────────────────╮
+│ No such command 'build-levels'.                                              │
+╰──────────────────────────────────────────────────────────────────────────────╯

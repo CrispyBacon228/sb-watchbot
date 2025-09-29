@@ -1,0 +1,39 @@
+from pathlib import Path
+import json, csv
+
+def run_replay(*, date=None, date_et=None, csv=None, csv_path=None, **kwargs):
+    """
+    Compatible replay entrypoint:
+    - Accepts either 'date' or 'date_et' (CLI uses date_et)
+    - Accepts either 'csv' or 'csv_path' for output
+    - Reads data/levels.json and writes a simple CSV [time, price]
+    """
+    # Normalize args
+    date_str = date or date_et or "unknown"
+    out_csv = csv_path or csv
+    levels_file = Path("data/levels.json")
+
+    if not levels_file.exists():
+        raise FileNotFoundError(f"{levels_file} not found. Build levels first (sbwatch levels build).")
+
+    try:
+        data = json.loads(levels_file.read_text())
+    except json.JSONDecodeError as e:
+        raise ValueError(f"{levels_file} is not valid JSON: {e}")
+
+    rows = data.get("levels", [])
+
+    out_dir = Path("out")
+    out_dir.mkdir(parents=True, exist_ok=True)
+    if not out_csv:
+        out_csv = out_dir / f"replay_{date_str}.csv"
+    else:
+        out_csv = Path(out_csv)
+
+    with out_csv.open("w", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(["time", "price"])
+        for r in rows:
+            w.writerow([r.get("time"), r.get("price")])
+
+    return str(out_csv)
