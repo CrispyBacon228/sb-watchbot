@@ -1,5 +1,9 @@
 from __future__ import annotations
-import os, json, time
+from sbwatch._bootstrap_env import *  # ensures .env is loaded
+
+import os
+import json
+import time
 import requests
 from typing import Optional
 

@@ -1,7 +1,10 @@
 from __future__ import annotations
+from sbwatch._bootstrap_env import *  # ensures .env is loaded
+
 import os
 from datetime import datetime, timezone
 import typer
+
 from sbwatch.adapters.discord import send_discord
 from sbwatch.data.ohlcv import get_ohlcv_1m
 

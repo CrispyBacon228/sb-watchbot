@@ -1,16 +1,18 @@
 from __future__ import annotations
+from sbwatch._bootstrap_env import *  # loads .env
+
 import os, time
 from datetime import datetime, timezone
 import typer
+
 from sbwatch.data.ohlcv import get_ohlcv_1m
-from sbwatch.strategy.silver_bullet import detect_signal
+from sbwatch.strategy.ict_sb import detect_signal_strict as detect_signal
 from sbwatch.adapters.discord import send_discord
 
-app = typer.Typer(help="SB Watchbot live runner")
-
-@app.command()
-def run(symbol: str = typer.Option(os.getenv("SYMBOL","NQ"), help="Symbol, e.g., NQ"),
-        poll: int = typer.Option(int(os.getenv("POLL_SECONDS", "5")), help="Poll seconds")):
+def main(
+    symbol: str = typer.Option(os.getenv("SYMBOL","NQ"), help="Symbol, e.g., NQ"),
+    poll: int = typer.Option(int(os.getenv("POLL_SECONDS", "5")), help="Poll seconds"),
+):
     seen = set()
     typer.echo(f"[live] Starting for {symbol} (poll={poll}s)")
     while True:
@@ -21,7 +23,7 @@ def run(symbol: str = typer.Option(os.getenv("SYMBOL","NQ"), help="Symbol, e.g.,
 
         sig = detect_signal(df, now)
         if sig:
-            side, px = sig
+            side, px = sig.side, sig.price
             key = f"{side}@{int(px)}:{now.strftime('%Y-%m-%dT%H:%M')}"
             if key not in seen:
                 seen.add(key)
@@ -31,4 +33,4 @@ def run(symbol: str = typer.Option(os.getenv("SYMBOL","NQ"), help="Symbol, e.g.,
         time.sleep(poll)
 
 if __name__ == "__main__":
-    app()
+    typer.run(main)

@@ -1,4 +1,14 @@
 from __future__ import annotations
-from dotenv import load_dotenv, find_dotenv
-# Load .env from the current project; let .env override any existing env vars
-load_dotenv(find_dotenv(usecwd=True), override=True)
+import os
+try:
+    from dotenv import load_dotenv
+    # Load /opt/sb-watchbot/.env explicitly, then fallback to CWD
+    load_dotenv("/opt/sb-watchbot/.env", override=False)
+    load_dotenv(override=False)
+except Exception:
+    pass
+
+# Optional: set process TZ if provided
+tz = os.getenv("TZ")
+if tz:
+    os.environ["TZ"] = tz
