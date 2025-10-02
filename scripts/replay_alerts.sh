@@ -1,29 +1,33 @@
 #!/usr/bin/env bash
 set -euo pipefail
-set -a; . ./.env; set +a
+source .venv/bin/activate
 
-DATE="${1:-$(date -u +%F)}"
-mkdir -p out
+CSV=""
+SPEED=0
+QUIET=""
+DATE_ARG=""
 
-CSV="out/replay_${DATE}.csv"
-
-# 1. Generate replay CSV if not already built
-if [ ! -s "$CSV" ]; then
-  echo "Building $CSV..."
-  ./scripts/replay_day.sh "$DATE"
-fi
-
-# 2. Run replay alerts against the CSV
-python -m sbwatch.app.replay_alerts --csv "$CSV" \
-| tee "out/replay_alerts_${DATE}.log" \
-| while IFS= read -r line; do
-  case "$line" in
-    "[ALERT]"*|"SB ENTRY "*|"[ALERT] SB ENTRY "*)
-      if [ -n "${DISCORD_WEBHOOK_URL:-}" ]; then
-        payload=$(printf '{"content":"%s"}' "$(echo "$line" | sed 's/"/\\"/g')")
-        curl -fsS -H "Content-Type: application/json" -d "$payload" "$DISCORD_WEBHOOK_URL" >/dev/null || true
-      fi
-      ;;
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --csv) CSV="$2"; shift 2 ;;
+    --speed) SPEED="$2"; shift 2 ;;
+    --quiet) QUIET="--quiet"; shift ;;
+    -h|--help) echo "usage: $0 [YYYY-MM-DD] [--csv PATH] [--speed N] [--quiet]"; exit 0;;
+    *) DATE_ARG="$1"; shift ;;
   esac
-  echo "$line"
 done
+
+if [[ -n "$CSV" ]]; then
+  # CSV mode: do not rebuild a day; just replay the CSV you gave me
+  echo "Replaying CSV: $CSV"
+  python -m sbwatch.app.replay_alerts --csv "$CSV" --speed "$SPEED" $QUIET
+else
+  if [[ -z "${DATE_ARG:-}" ]]; then
+    echo "error: pass a date (YYYY-MM-DD) or --csv PATH"
+    exit 1
+  fi
+  # DATE mode: build day CSV, then replay it
+  echo "Building day CSV for DATE=$DATE_ARG..."
+  python -m sbwatch.app.replay_day "$DATE_ARG"
+  python -m sbwatch.app.replay_alerts --csv "out/replay_${DATE_ARG}.csv" --speed "$SPEED" $QUIET
+fi

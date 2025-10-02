@@ -9,9 +9,9 @@ SESSION_START = dtime(10, 0)
 SESSION_END   = dtime(11, 0)
 
 # ---- Quality gates (moderate) ----
-MIN_DISP_PTS   = 1.5      # middle candle total range
+MIN_DISP_PTS = 0.10
 MIN_BODY_FRAC  = 0.45     # middle candle body >= 45% of range
-MIN_ZONE_PTS   = 0.75     # ignore micro FVGs
+MIN_ZONE_PTS = 0.25
 FRESH_MAX_BARS = 6        # touch must happen within 6 bars of creation
 REQUIRE_OUTSIDE_IN = True # touch must return from outside
 CONFIRM_PTS    = 0.25     # touch bar closes in direction by >= 0.25
