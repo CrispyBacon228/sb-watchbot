@@ -1,15 +1,31 @@
 import argparse
 from zoneinfo import ZoneInfo
 import pandas as pd
+import os
+import json
+from urllib import request
 
 NY = ZoneInfo("America/New_York")
 
+def send_discord(text: str) -> None:
+    url = os.getenv('DISCORD_WEBHOOK')
+    if not url:
+        return
+    try:
+        data = json.dumps({'content': text}).encode('utf-8')
+        req = request.Request(url, data=data, headers={'Content-Type': 'application/json'})
+        request.urlopen(req, timeout=5)
+    except Exception:
+        pass
+
+
 # ---- knobs (kept permissive so you see alerts) ----
 TICK = 0.25
-KILL_START = (10, 0)     # 10:00 NY
-KILL_END   = (11, 0)     # 11:00 NY
-MIN_DISP_PTS = 0.25      # min body/disp; keep small
-MIN_ZONE_PTS = 0.50      # min width; keep small
+STOP_BUF_TICKS = 6  # 4–8 typical on NQ; was 1 tick before
+KILL_START = (10, 0)
+KILL_END   = (11, 0)
+MIN_DISP_PTS = 0.50
+MIN_ZONE_PTS = 0.50
 ENTRY_TOUCH_ONLY = True  # require touch of zone to enter
 # ---------------------------------------------------
 
@@ -56,13 +72,13 @@ def scan_and_alert(df):
             if z["side"]=="LONG":
                 if l <= z["hi"] and h >= z["lo"]:
                     z["touched_ts"] = ts
-                    entry = z["hi"]; sl = z["lo"] - TICK; r = entry - sl
+                    entry = z["hi"]; sl = z["lo"] - STOP_BUF_TICKS * TICK; r = entry - sl
                     alerts.append(dict(side="LONG", when=ts, entry=entry, zone=(z["lo"],z["hi"]),
                                        sl=sl, r1=entry+r, r2=entry+2*r))
             else: # SHORT
                 if h >= z["lo"] and l <= z["hi"]:
                     z["touched_ts"] = ts
-                    entry = z["lo"]; sl = z["hi"] + TICK; r = sl - entry
+                    entry = z["lo"]; sl = z["hi"] + STOP_BUF_TICKS * TICK; r = sl - entry
                     alerts.append(dict(side="SHORT", when=ts, entry=entry, zone=(z["lo"],z["hi"]),
                                        sl=sl, r1=entry-r, r2=entry-2*r))
     print(f"[DBG] touches={sum(1 for z in fvgs if z['touched_ts'] is not None)} alerts={len(alerts)}")
@@ -80,12 +96,17 @@ def load_csv(path):
     df = df.loc[mask, ["timestamp","open","high","low","close","volume"]].reset_index(drop=True)
     print(f"[DBG] killzone rows={len(df)}")
     return df
-
 def print_alerts(alerts):
     for a in alerts:
-        print(f"[ALERT] SB ENTRY {a['side']} | {_edt(a['when'])} | "
-              f"Entry {a['entry']:.2f} | FVG[{a['zone'][0]:.2f},{a['zone'][1]:.2f}] | "
+        print(f"[ALERT] SB ENTRY {a['side']:<5} | {a['when']} | "
+              f"Entry {a['entry']:.2f} | FVG{a['zone']} | "
               f"SL {a['sl']:.2f} | 1R {a['r1']:.2f} | 2R {a['r2']:.2f}")
+        try:
+            send_discord(f"{a['when']} | {a['side']} ENTRY {a['entry']:.2f} | "
+                         f"FVG{a['zone']} | SL {a['sl']:.2f} | "
+                         f"1R {a['r1']:.2f} | 2R {a['r2']:.2f}")
+        except Exception:
+            pass
 
 def main():
     ap = argparse.ArgumentParser()
