@@ -9,9 +9,9 @@ SESSION_START = dtime(10, 0)
 SESSION_END   = dtime(11, 0)
 
 # ---- Quality gates (moderate) ----
-MIN_DISP_PTS = 0.10
+MIN_DISP_PTS = 1.00
 MIN_BODY_FRAC  = 0.45     # middle candle body >= 45% of range
-MIN_ZONE_PTS = 0.25
+MIN_ZONE_PTS = 1.00
 FRESH_MAX_BARS = 6        # touch must happen within 6 bars of creation
 REQUIRE_OUTSIDE_IN = True # touch must return from outside
 CONFIRM_PTS    = 0.25     # touch bar closes in direction by >= 0.25
@@ -150,7 +150,18 @@ def on_bar(row, verbose=False):
 
         # fire once
         fvg["touched"] = True
-        last_alert_ts_by_dir[fvg["direction"]] = ts
-        alerts.append(_fmt_sb_alert(ts, side, entry, fvg["low"], fvg["high"], stop))
+        last_alert_ts_by_dir[fvg["direction"]] = ts\1# --- reject micro FVGs before emitting ---
+\1try:
+\1    _zone_pts = abs(fvg_hi - fvg_lo)
+\1except NameError:
+\1    _zone_pts = None
+\1if _zone_pts is not None and _zone_pts < MIN_ZONE_PTS:
+\1    return alerts
+\1alerts.append(_fmt_sb_alert(ts, side, entry, fvg["low"], fvg["high"], stop))
 
     return alerts if alerts else None
+ATR_LEN = 14
+
+MIN_RISK_PCT_ATR = 0.12
+
+MAX_RISK_PCT_ATR = 0.65

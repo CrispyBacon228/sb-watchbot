@@ -7,4 +7,7 @@ Traceback (most recent call last):
     from sbwatch.engine.live import run_live
   File "/opt/sb-watchbot/src/sbwatch/engine/live.py", line 8, in <module>
     from sbwatch.strategy.ict import ICTDetector
-ModuleNotFoundError: No module named 'sbwatch.strategy.ict'; 'sbwatch.strategy' is not a package
+  File "/opt/sb-watchbot/src/sbwatch/strategy.py", line 153
+    last_alert_ts_by_dir[fvg["direction"]] = ts\1# --- reject micro FVGs before emitting ---
+                                                ^
+SyntaxError: unexpected character after line continuation character
