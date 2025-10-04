@@ -143,7 +143,7 @@ def build_fvgs(df_full, df_kz):
                                     sweep_ext=se, touched=False))
     return out
 
-def maybe_alert(df_kz, fvgs, sent_ids:set):
+def maybe_alert(df_kz, fvgs, sent_ids:set, running_total:dict):
     """Check touches; print/Discord once per FVG."""
     alerts = 0
     for i_kz, row in df_kz.iterrows():
@@ -173,6 +173,7 @@ def maybe_alert(df_kz, fvgs, sent_ids:set):
                     f"SL {sl:.2f} | 1R {r1:.2f} | 2R {r2:.2f}")
             print(line); send_discord(line)
             alerts += 1
+            running_total['count'] = running_total.get('count', 0) + 1
     return alerts
 
 def main():
@@ -180,6 +181,7 @@ def main():
     ap.add_argument("--csv", required=True, help="Live minute CSV that is continuously updated")
     ap.add_argument("--poll", type=float, default=5.0, help="seconds between polls")
     ap.add_argument("--heartbeat", action="store_true", help="send ready/armed messages")
+    ap.add_argument("--daily-pings", action="store_true", help="send 09:59, 10:10, 10:40 messages")
     ap.add_argument("--demo-alert", action="store_true", help="post a sample Silver Bullet alert now and exit")
     args = ap.parse_args()
     if args.demo_alert:
@@ -188,6 +190,8 @@ def main():
         return
 
     sent = set()
+    totals = {'count': 0}
+    fired = set()  # '959','1010','1040'
     last_sig = None
     if args.heartbeat:
         send_discord("🟢 SB Watchbot starting…")
@@ -206,6 +210,24 @@ def main():
                 time.sleep(args.poll); continue
 
             df_kz = window_kz(df_full)
+            # Timed heartbeats (ET)
+            if args.daily_pings:
+                hh, mm = now_et.hour, now_et.minute
+                # 09:59 status
+                if (hh==9 and mm==59) and ('959' not in fired):
+                    send_discord('🟦 09:59 ET — SB Watchbot online. Killzone 10:00–11:00 ET. Waiting for displacement + FVG after a sweep.')
+                    fired.add('959')
+                # 10:10 no-trade (or count) update
+                if (hh==10 and mm==10) and ('1010' not in fired):
+                    n = totals.get('count',0)
+                    msg = f'🟨 10:10 ET — No trades so far.' if n==0 else f'🟩 10:10 ET — {n} trade(s) so far.'
+                    send_discord(msg); fired.add('1010')
+                # 10:40 no-trade (or count) update
+                if (hh==10 and mm==40) and ('1040' not in fired):
+                    n = totals.get('count',0)
+                    msg = f'🟨 10:40 ET — Still no trades.' if n==0 else f'🟩 10:40 ET — {n} trade(s) so far.'
+                    send_discord(msg); fired.add('1040')
+
             if df_kz.empty:
                 time.sleep(args.poll); continue
 
