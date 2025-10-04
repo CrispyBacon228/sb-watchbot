@@ -1,0 +1,9 @@
+[Unit]
+Description=SB Watchbot – run replay and post summary to Discord
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/sb-watchbot
+EnvironmentFile=/etc/sb-watchbot/env
+Environment=PATH=/opt/sb-watchbot/.venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin
+ExecStart=/opt/sb-watchbot/.venv/bin/python scripts/replay_and_post.py

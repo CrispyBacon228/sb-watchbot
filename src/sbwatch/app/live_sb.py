@@ -182,6 +182,7 @@ def main():
     ap.add_argument("--poll", type=float, default=5.0, help="seconds between polls")
     ap.add_argument("--heartbeat", action="store_true", help="send ready/armed messages")
     ap.add_argument("--daily-pings", action="store_true", help="send 09:59, 10:10, 10:40 messages")
+    ap.add_argument("--ignore-clock", action="store_true", help="process CSV even if now is outside 10–11 ET")
     ap.add_argument("--demo-alert", action="store_true", help="post a sample Silver Bullet alert now and exit")
     args = ap.parse_args()
     if args.demo_alert:
@@ -206,7 +207,7 @@ def main():
             if (now_et.hour, now_et.minute) == KILL_START and last_sig != "armed":
                 send_discord("⏱️ SB armed: 10:00–11:00 ET window live.")
                 last_sig = "armed"
-            if now_et.hour >= KILL_END[0] and now_et.minute >= KILL_END[1]:
+            if (not args.ignore_clock) and (now_et.hour > KILL_END[0] or (now_et.hour == KILL_END[0] and now_et.minute >= KILL_END[1])):
                 time.sleep(args.poll); continue
 
             df_kz = window_kz(df_full)
@@ -238,7 +239,7 @@ def main():
                 # Rebuild each poll (cheap) so we don't miss new FVGs
                 globals()["fvgs_cache"] = build_fvgs(df_full, df_kz)
 
-            _ = maybe_alert(df_kz, globals()["fvgs_cache"], sent)
+            _ = maybe_alert(df_kz, globals()["fvgs_cache"], sent, totals)
             time.sleep(args.poll)
         except KeyboardInterrupt:
             break

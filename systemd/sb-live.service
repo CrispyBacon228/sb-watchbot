@@ -1,0 +1,16 @@
+[Unit]
+Description=SB Watchbot ICT Silver Bullet live
+After=network-online.target sb-live-fetch.service
+Wants=sb-live-fetch.service
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/sb-watchbot
+EnvironmentFile=/etc/sb-watchbot/env
+Environment=PATH=/opt/sb-watchbot/.venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin
+ExecStart=/opt/sb-watchbot/.venv/bin/python -m sbwatch.app.live_sb --csv /opt/sb-watchbot/live/nq_1m.csv --poll 5 --heartbeat --daily-pings
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

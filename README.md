@@ -24,3 +24,21 @@ This repo includes a live runner that mirrors the replay logic for ICT Silver Bu
 - **Services:** `sb-live-fetch.service`, `sb-live.service` (systemd).
 
 Env:
+
+## Live Mode (hands-off)
+
+**Services** (templates in `systemd/`):
+- `sb-live-fetch.service` — updates `live/nq_1m.csv` (Databento 1m OHLCV)
+- `sb-live.service` — runs the ICT SB strategy and posts alerts to Discord (10:00–11:00 ET)
+- `sb-replay-post.timer` — at **11:10 ET** runs the day’s replay and posts a summary to Discord
+
+**Env** (in `/etc/sb-watchbot/env`):
+DISCORD_WEBHOOK=https://discord.com/api/webhooks/1422365990737412168/8FwBC52I-zs8WZv_ZyFjnTDHgS_Gr0TYFLSaNo9cqhsS620Vv5vsZOsGlRhlZXTlbaVM
+DATABENTO_API_KEY=db-qarsfTHECTCLYKcDphtV3Nw6Y7WLi
+SYM=NQZ5
+
+**Install & start**:
+
+**Testing**:
+- Bypass clock: `python -m sbwatch.app.live_sb --csv live/nq_1m.csv --ignore-clock --heartbeat --daily-pings`
+- Debug levels/FVGs: `python scripts/levels_debug.py out/replay_YYYY-MM-DD.csv`, `python scripts/fvg_debug.py out/replay_YYYY-MM-DD.csv`

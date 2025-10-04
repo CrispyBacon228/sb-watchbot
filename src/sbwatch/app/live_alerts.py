@@ -12,7 +12,7 @@ from sbwatch.strategy import on_bar  # on_bar(row) -> list[alerts] or None
 
 # optional discord
 def notify_discord(text: str):
-    url = os.getenv("DISCORD_WEBHOOK_URL")
+    url = os.getenv("DISCORD_WEBHOOK")
     if not url:
         return
     try:

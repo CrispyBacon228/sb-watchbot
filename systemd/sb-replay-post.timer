@@ -1,0 +1,10 @@
+[Unit]
+Description=Run SB replay + post at 11:10 ET (weekdays)
+
+[Timer]
+OnCalendar=Mon..Fri *-*-* 11:10:00 America/New_York
+Persistent=true
+Unit=sb-replay-post.service
+
+[Install]
+WantedBy=timers.target
