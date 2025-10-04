@@ -180,7 +180,12 @@ def main():
     ap.add_argument("--csv", required=True, help="Live minute CSV that is continuously updated")
     ap.add_argument("--poll", type=float, default=5.0, help="seconds between polls")
     ap.add_argument("--heartbeat", action="store_true", help="send ready/armed messages")
+    ap.add_argument("--demo-alert", action="store_true", help="post a sample Silver Bullet alert now and exit")
     args = ap.parse_args()
+    if args.demo_alert:
+        send_discord("[ALERT] SB ENTRY LONG | demo | Entry 25081.00 | FVG(25080.50, 25081.50) | SL 25080.00 | 1R 25082.00 | 2R 25083.00")
+        print("demo alert sent");
+        return
 
     sent = set()
     last_sig = None

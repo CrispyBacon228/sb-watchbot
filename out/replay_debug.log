@@ -1,0 +1,12 @@
+[DBG] killzone rows=60
+[DBG] window 10–11ET hi/lo = 25128.75 / 25051.00
+[DBG] bars with range >= 1.25 pts: 58
+[DBG] zones >= 0.75 pts: 9
+[DBG] recent-sweep lo/hi (<= 12 bars) in those bars: 2/0
+[DBG] FVGs created:
+  - 2025-10-03 10:13:00 AM EDT LONG  zone=(25075.75,25077.00) sweep_extreme=25051.00
+  - 2025-10-03 10:16:00 AM EDT LONG  zone=(25080.50,25081.50) sweep_extreme=25051.00
+[DBG] bars=60 fvgs=2
+[DBG] touches=2 alerts=2
+[ALERT] SB ENTRY LONG  | 2025-10-03 10:00:00 AM EDT | Entry 25076.38 | FVG(25075.75, 25077.0) | SL 25049.50 | 1R 25103.25 | 2R 25130.12
+[ALERT] SB ENTRY LONG  | 2025-10-03 10:00:00 AM EDT | Entry 25081.00 | FVG(25080.5, 25081.5) | SL 25049.50 | 1R 25112.50 | 2R 25144.00
