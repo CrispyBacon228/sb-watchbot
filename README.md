@@ -13,3 +13,14 @@ Rules the bot enforces during replay:
 - **Freshness**: FVG must be touched within `FRESH_MAX_BARS` of creation.
 
 Key tunables live in `src/sbwatch/app/replay_alerts.py`:
+
+## Live Mode
+
+This repo includes a live runner that mirrors the replay logic for ICT Silver Bullet (10–11 ET).
+
+- **Fetcher:** `scripts/live_fetch_nq.sh` keeps `live/nq_1m.csv` updated (Databento, 1-min OHLCV).
+- **Strategy:** `src/sbwatch/app/live_sb.py` reads `live/nq_1m.csv`, enforces 10–11 ET, requires a recent sweep, detects 3-bar FVGs, and alerts to Discord.
+- **Stops/TPs:** SL = true sweep extreme ± `STOP_BUF_TICKS * TICK`; TP1/TP2 = 1R/2R off that SL.
+- **Services:** `sb-live-fetch.service`, `sb-live.service` (systemd).
+
+Env:
