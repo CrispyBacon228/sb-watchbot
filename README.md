@@ -1,44 +1,98 @@
+🕙 ICT Silver Bullet (10:00–11:00 NY) — Implementation
+📘 Replay Mode
 
-## ICT Silver Bullet (10:00–11:00 NY) — Implementation
+The bot enforces these rules during replays:
 
-Rules the bot enforces during replay:
-- **Time gate**: 10:00–11:00 America/New_York only.
-- **Liquidity sweep required**:
-  - Bullish: the displacement bar must **sweep lows** within the last `SWEEP_LOOKBACK` bars.
-  - Bearish: the displacement bar must **sweep highs** within the last `SWEEP_LOOKBACK` bars.
-- **Displacement + FVG**: 3-bar FVG with `MIN_DISP_PTS` (bar range surrogate) and `MIN_ZONE_PTS` (gap height).
-- **Entry**: at the **mean threshold (50%)** of the FVG by default (`ENTRY_MODE=mean`).
-- **Stop**: **beyond the swept swing** ± `STOP_BUF_TICKS * TICK` (ICT style).
-- **Targets**: 1R and 2R from the stop-anchored R. Trades with `R < MIN_R_POINTS` are skipped.
-- **Freshness**: FVG must be touched within `FRESH_MAX_BARS` of creation.
+Time Gate: 10:00–11:00 America/New_York only
 
-Key tunables live in `src/sbwatch/app/replay_alerts.py`:
+Liquidity Sweep:
 
-## Live Mode
+Bullish: Displacement bar must sweep recent lows within the last SWEEP_LOOKBACK bars
 
-This repo includes a live runner that mirrors the replay logic for ICT Silver Bullet (10–11 ET).
+Bearish: Displacement bar must sweep recent highs within the last SWEEP_LOOKBACK bars
 
-- **Fetcher:** `scripts/live_fetch_nq.sh` keeps `live/nq_1m.csv` updated (Databento, 1-min OHLCV).
-- **Strategy:** `src/sbwatch/app/live_sb.py` reads `live/nq_1m.csv`, enforces 10–11 ET, requires a recent sweep, detects 3-bar FVGs, and alerts to Discord.
-- **Stops/TPs:** SL = true sweep extreme ± `STOP_BUF_TICKS * TICK`; TP1/TP2 = 1R/2R off that SL.
-- **Services:** `sb-live-fetch.service`, `sb-live.service` (systemd).
+Displacement + FVG: 3-bar FVG with minimum displacement (MIN_DISP_PTS) and minimum gap height (MIN_ZONE_PTS)
 
-Env:
+Entry: Default at the 50% (mean threshold) of the FVG (ENTRY_MODE=mean)
 
-## Live Mode (hands-off)
+Stop Loss: Beyond the swept swing ± STOP_BUF_TICKS * TICK (ICT-style)
 
-**Services** (templates in `systemd/`):
-- `sb-live-fetch.service` — updates `live/nq_1m.csv` (Databento 1m OHLCV)
-- `sb-live.service` — runs the ICT SB strategy and posts alerts to Discord (10:00–11:00 ET)
-- `sb-replay-post.timer` — at **11:10 ET** runs the day’s replay and posts a summary to Discord
+Targets: 1R and 2R, calculated from the SL anchor. Trades with R < MIN_R_POINTS are skipped
 
-**Env** (in `/etc/sb-watchbot/env`):
-DISCORD_WEBHOOK=https://discord.com/api/webhooks/1422365990737412168/8FwBC52I-zs8WZv_ZyFjnTDHgS_Gr0TYFLSaNo9cqhsS620Vv5vsZOsGlRhlZXTlbaVM
-DATABENTO_API_KEY=db-qarsfTHECTCLYKcDphtV3Nw6Y7WLi
+Freshness: FVG must be touched within FRESH_MAX_BARS of its creation
+
+All key tunables can be found in:
+src/sbwatch/app/replay_alerts.py
+
+⚡ Live Mode
+
+The live runner mirrors replay logic and operates hands-off using systemd services.
+
+Live components:
+
+Fetcher: scripts/live_fetch_nq.sh — keeps live/nq_1m.csv updated (1-minute OHLCV data)
+
+Strategy: src/sbwatch/app/live_sb.py — monitors live data, enforces the 10–11 ET session, detects sweeps + FVGs, and sends alerts
+
+Stops/Targets:
+
+SL = true sweep extreme ± STOP_BUF_TICKS * TICK
+
+TP1 / TP2 = 1R / 2R multiples
+
+⚙️ Services (templates in systemd/)
+Service	Description
+sb-live-fetch.service	Continuously updates live/nq_1m.csv (1m OHLCV data feed)
+sb-live.service	Runs the ICT Silver Bullet strategy and posts alerts (10:00–11:00 ET)
+sb-replay-post.timer	Triggers at 11:10 ET daily to run replay and post summary
+
+Environment variables are stored in /etc/sb-watchbot/env, which includes:
+
+DISCORD_WEBHOOK=...
+DATABENTO_API_KEY=...
 SYM=NQZ5
 
-**Install & start**:
 
-**Testing**:
-- Bypass clock: `python -m sbwatch.app.live_sb --csv live/nq_1m.csv --ignore-clock --heartbeat --daily-pings`
-- Debug levels/FVGs: `python scripts/levels_debug.py out/replay_YYYY-MM-DD.csv`, `python scripts/fvg_debug.py out/replay_YYYY-MM-DD.csv`
+(Do not share this file or its contents — it contains sensitive credentials.)
+
+🧩 Installation & Startup
+# 1. Clone repository
+git clone https://github.com/your-username/sb-watchbot.git
+cd sb-watchbot
+
+# 2. Create & activate virtual environment
+python3 -m venv .venv
+source .venv/bin/activate
+
+# 3. Install requirements
+pip install -r requirements.txt
+
+# 4. Copy systemd services
+sudo cp systemd/*.service systemd/*.timer /etc/systemd/system/
+sudo systemctl daemon-reload
+
+# 5. Enable + start
+sudo systemctl enable sb-live-fetch.service sb-live.service sb-replay-post.timer
+sudo systemctl start sb-live-fetch.service sb-live.service sb-replay-post.timer
+
+🧪 Testing & Debug
+
+Bypass clock gate (manual run):
+
+python -m sbwatch.app.live_sb --csv live/nq_1m.csv --ignore-clock --heartbeat --daily-pings
+
+
+Inspect replay outputs:
+
+python scripts/levels_debug.py out/replay_YYYY-MM-DD.csv
+python scripts/fvg_debug.py out/replay_YYYY-MM-DD.csv
+
+✅ Summary
+
+When all services are enabled and running, the bot:
+
+Pulls 1-minute NQ data automatically
+
+Executes the Silver Bullet logic between 10:00–11:00 ET
+
+Posts live alerts and a daily replay summary to Discord
