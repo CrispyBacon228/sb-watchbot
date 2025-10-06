@@ -1,41 +1,94 @@
-import os
-from datetime import datetime, timezone
-import pytz
-import pandas as pd
-from dotenv import load_dotenv
+import argparse, os, sys, subprocess, tempfile
+import datetime as dt
+from zoneinfo import ZoneInfo
+from sbwatch.data.db_fetch import fetch_range
 
-# use the working fetcher we just installed
-from sbwatch.data.db_fetch import fetch_range, NY
+ET = ZoneInfo("America/New_York")
 
-load_dotenv("/opt/sb-watchbot/.env")
+def et_window_to_utc(the_date: dt.date, start_et="09:30", end_et="11:05"):
+    sh, sm = map(int, start_et.split(":"))
+    eh, em = map(int, end_et.split(":"))
+    start_et_dt = dt.datetime(the_date.year, the_date.month, the_date.day, sh, sm, tzinfo=ET)
+    end_et_dt   = dt.datetime(the_date.year, the_date.month, the_date.day, eh, em, tzinfo=ET)
+    # include full 11:05 bar
+    end_et_dt = end_et_dt + dt.timedelta(minutes=1)
+    return start_et_dt.astimezone(dt.timezone.utc), end_et_dt.astimezone(dt.timezone.utc)
 
-def main(date_str: str):
-    # session window 09:30–16:00 NY
-    d = datetime.strptime(date_str, "%Y-%m-%d")
-    start = NY.localize(datetime(d.year, d.month, d.day, 9, 30)).astimezone(timezone.utc)
-    end   = NY.localize(datetime(d.year, d.month, d.day, 16, 0)).astimezone(timezone.utc)
+def main():
+    import pandas as pd
 
-    df = fetch_range(start, end)
-    if df is None or df.empty:
-        print(f"EMPTY result for {date_str}")
-        return
+    p = argparse.ArgumentParser()
+    p.add_argument("--date", required=True)
+    p.add_argument("--start-et", default="09:30")
+    p.add_argument("--end-et",   default="11:05")
+    args = p.parse_args()
 
-    os.makedirs("out", exist_ok=True)
-    out = f"out/replay_{date_str}.csv"
-    cols = [c for c in ("timestamp","open","high","low","close","volume") if c in df.columns]
-    df[cols].to_csv(out, index=False)
-    print(f"Wrote -> {out}")
+    y, m, d = map(int, args.date.split("-"))
+    start_utc, end_utc = et_window_to_utc(dt.date(y, m, d), args.start_et, args.end_et)
+    print(f"Using DATE={args.date} ET, window {args.start_et}–{args.end_et} ET")
+    print(f"UTC range: {start_utc.isoformat()} → {end_utc.isoformat()}")
 
+    # 1) Fetch bars
+    data = fetch_range(start_utc, end_utc)
+
+    # 2) DBNStore → DataFrame if needed
+    df = data.to_df() if hasattr(data, "to_df") else data
+
+    # ---- Normalize timestamp ----
+    # Case A: timestamp already a column (best effort common names)
+    time_col = next((c for c in ["timestamp","ts_event","ts","time","datetime","ts_recv"] if c in df.columns), None)
+
+    # Case B: time is on the index (very common with Databento OHLCV)
+    if time_col is None:
+        if isinstance(df.index, pd.DatetimeIndex):
+            df = df.reset_index().rename(columns={"index": "ts_event"})
+            time_col = "ts_event"
+        elif df.index.name in ("ts_event","ts_recv","time","datetime"):
+            name = df.index.name
+            df = df.reset_index()
+            time_col = name
+
+    if time_col is None:
+        print("❌ No timestamp-like column or index found. Columns:", list(df.columns), " Index name:", df.index.name)
+        sys.exit(1)
+
+    # Convert to UTC datetimes, make the exact 'timestamp' column the replay expects
+    s = df[time_col]
+    if pd.api.types.is_integer_dtype(s) or pd.api.types.is_float_dtype(s):
+        # Databento nano/epoch → assume ns
+        ts = pd.to_datetime(s, unit="ns", utc=True)
+    else:
+        ts = pd.to_datetime(s, utc=True, errors="coerce")
+
+    if ts.isna().any():
+        print("❌ Failed to convert timestamps from", time_col)
+        print(df[[time_col]].head())
+        sys.exit(1)
+
+    df = df.copy()
+    # ISO8601 UTC with +0000 so pandas parse_dates=['timestamp'] works on the other side
+    df["timestamp"] = ts.dt.strftime("%Y-%m-%dT%H:%M:%S%z")
+
+    # 3) Select columns for the replay CSV
+    out_cols = [c for c in ["timestamp","open","high","low","close","volume"] if c in df.columns]
+    if "timestamp" not in out_cols:
+        out_cols = ["timestamp"] + [c for c in ["open","high","low","close","volume"] if c in df.columns]
+
+    # 4) Write temp CSV
+    with tempfile.NamedTemporaryFile(prefix=f"replay_{args.date}_", suffix=".csv", delete=False) as tmp:
+        temp_csv = tmp.name
+    df.to_csv(temp_csv, index=False, columns=out_cols)
+    print(f"✅ Wrote temp CSV for replay: {temp_csv}")
+    # print a tiny preview for sanity
     try:
-        print("---- head ----")
-        print(pd.read_csv(out).head().to_string(index=False))
-        print("---- tail ----")
-        print(pd.read_csv(out).tail().to_string(index=False))
+        print(df[out_cols].head(3).to_string(index=False))
     except Exception:
         pass
 
+    # 5) Run your existing replay CLI (expects --csv only)
+    cmd = [sys.executable, "-m", "sbwatch.app.replay_alerts", "--csv", temp_csv]
+    subprocess.check_call(cmd)
+    print("✅ Replay completed successfully.")
+
 if __name__ == "__main__":
-    import sys
-    date_arg = sys.argv[1] if len(sys.argv) > 1 else datetime.now().strftime("%Y-%m-%d")
-    print(f"Using DATE={date_arg}")
-    main(date_arg)
+    main()
