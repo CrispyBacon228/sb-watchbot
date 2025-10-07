@@ -13,7 +13,7 @@ class Window:
 
 ASIA   = Window(time(20,0), time(0,0))    # 20:00–00:00 ET
 LONDON = Window(time(2,0),  time(5,0))    # 02:00–05:00 ET
-RTH    = Window(time(9,30), time(16,0))   # 09:30–16:00 ET
+RTH    = Window(time(9,30), time(11, 5))   # 09:30–16:00 ET
 
 def et_midnight(date_et_str: str | None) -> datetime:
     if date_et_str:
