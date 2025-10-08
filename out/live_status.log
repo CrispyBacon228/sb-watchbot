@@ -2,3 +2,7 @@
 2025-10-06 20:43:45 UTC | skipped (outside window or weekend)
 2025-10-06 20:43:48 UTC | DOW=1 NOW_ET=16:43 MSG="SB status 10:40 ET: still scanning (no trades yet)"
 2025-10-06 20:43:48 UTC | skipped (outside window or weekend)
+2025-10-07 14:10:04 UTC | DOW=2 NOW_ET=10:10 MSG="SB status 10:10 ET: no trades so far (heartbeat)"
+2025-10-07 14:10:04 UTC | curl_code=204
+2025-10-07 14:40:09 UTC | DOW=2 NOW_ET=10:40 MSG="SB status 10:40 ET: still scanning (no trades yet)"
+2025-10-07 14:40:10 UTC | curl_code=204
