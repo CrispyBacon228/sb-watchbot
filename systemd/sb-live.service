@@ -8,7 +8,7 @@ Type=simple
 WorkingDirectory=/opt/sb-watchbot
 EnvironmentFile=/etc/sb-watchbot/env
 Environment=PATH=/opt/sb-watchbot/.venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin
-ExecStart=/opt/sb-watchbot/.venv/bin/python -m sbwatch.app.live_sb --csv /opt/sb-watchbot/live/nq_1m.csv --poll 5 --heartbeat --daily-pings
+ExecStart=/opt/sb-watchbot/.venv/bin/sbwatch live run --poll 5 --heartbeat --daily-pings
 Restart=always
 RestartSec=2
 
