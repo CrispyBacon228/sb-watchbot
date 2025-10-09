@@ -42,6 +42,10 @@ def _coerce(df):
 
 def load_rth(csv_path):
     df = pd.read_csv(csv_path, parse_dates=["timestamp"])
+
+# --- ensure timestamp is true datetime (prevents .dt errors) ---
+df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce", utc=True)
+df = df.dropna(subset=["timestamp"])
     if df["timestamp"].dt.tz is None:
         df["timestamp"] = df["timestamp"].dt.tz_localize("UTC")
     ts = df["timestamp"].dt.tz_convert(NY)
