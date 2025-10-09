@@ -7,10 +7,16 @@ Wants=sb-live-fetch.service
 Type=simple
 WorkingDirectory=/opt/sb-watchbot
 EnvironmentFile=/etc/sb-watchbot/env
-Environment=PATH=/opt/sb-watchbot/.venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin
-ExecStart=/opt/sb-watchbot/.venv/bin/sbwatch live run --poll 5 --heartbeat --daily-pings
+Environment=HOME=/opt/sb-watchbot
+# Use module CLI (supports --poll). Tee logs for visibility.
+ExecStart=/bin/bash -c 'source .venv/bin/activate && PYTHONPATH=. python -m sbwatch.app.live_sb --csv /opt/sb-watchbot/live/nq_1m.csv --poll 5 --heartbeat --daily-pings 2>&1 | tee -a out/live.log'
 Restart=always
-RestartSec=2
+RestartSec=3
+NoNewPrivileges=true
+ProtectSystem=full
+ProtectHome=true
+PrivateTmp=true
+LimitNOFILE=65536
 
 [Install]
 WantedBy=multi-user.target

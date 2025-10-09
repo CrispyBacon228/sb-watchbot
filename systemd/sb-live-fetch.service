@@ -7,10 +7,15 @@ Wants=network-online.target
 Type=simple
 WorkingDirectory=/opt/sb-watchbot
 EnvironmentFile=/etc/sb-watchbot/env
-Environment=PATH=/opt/sb-watchbot/.venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin
-ExecStart=/bin/bash /opt/sb-watchbot/scripts/live_fetch_nq.sh
+Environment=HOME=/opt/sb-watchbot
+ExecStart=/bin/bash -c 'bash scripts/live_fetch_nq.sh'
 Restart=always
-RestartSec=2
+RestartSec=3
+NoNewPrivileges=true
+ProtectSystem=full
+ProtectHome=true
+PrivateTmp=true
+LimitNOFILE=65536
 
 [Install]
 WantedBy=multi-user.target
