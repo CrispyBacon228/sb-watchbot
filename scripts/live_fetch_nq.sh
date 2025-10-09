@@ -1,50 +1,31 @@
 #!/usr/bin/env bash
 set -euo pipefail
-export PATH="/opt/sb-watchbot/.venv/bin:$PATH"
-: "${DATABENTO_API_KEY:?DATABENTO_API_KEY not set}"
+mkdir -p live out
+CSV="live/nq_1m.csv"
+TMP="$(mktemp)"
 
-SYM="${SYM:-NQ*}"
-OUT="live/nq_1m.csv"
-TMP_RAW="${OUT}.raw.tmp"
-TMP_NORM="${OUT}.norm.tmp"
+# Call the original fetcher; it should print CSV to stdout.
+# If your original writes to a file instead, edit it to honor CSV="$TMP" and write there.
+if ! bash scripts/live_fetch_nq.sh.bak > "$TMP"; then
+  echo "$(date -Iseconds) ERROR fetch exited nonzero" | tee -a out/live-fetch.log
+  rm -f "$TMP"; exit 1
+fi
 
-mkdir -p live
+# Require at least one data row (not just header)
+if ! grep -qE '^[0-9]' "$TMP"; then
+  echo "$(date -Iseconds) ⚠️ no data (skip write)" | tee -a out/live-fetch.log
+  rm -f "$TMP"; exit 0
+fi
 
-while true; do
-  DAY=$(date +%F)
-
-  # 1) fetch to TMP_RAW
-  databento timeseries get \
-    --dataset=GLBX.MDP3 \
-    --schema=ohlcv-1m \
-    --symbols="$SYM" \
-    --start="${DAY} 09:30:00 America/New_York" \
-    --end="now America/New_York" \
-    --compression=none \
-    --stitch=legacy \
-    --out="$TMP_RAW" >/dev/null 2>&1 || true
-
-  # 2) normalize -> TMP_NORM (only if TMP_RAW exists)
-  if [[ -s "$TMP_RAW" ]]; then
-    python - <<'PY' "$TMP_RAW" "$TMP_NORM"
-import sys, pandas as pd, os
-src, dst = sys.argv[1], sys.argv[2]
-if not os.path.exists(src) or os.path.getsize(src)==0:
-    raise SystemExit(0)
-df = pd.read_csv(src)
-df.columns = [c.lower() for c in df.columns]
-if "timestamp" not in df.columns:
-    for c in ("ts","time","datetime","date"):
-        if c in df.columns:
-            df.rename(columns={c:"timestamp"}, inplace=True)
-            break
-df = df[["timestamp","open","high","low","close","volume"]].dropna()
-df.to_csv(dst, index=False)
+# Price sanity (avoid double-scaling)
+LAST_CLOSE="$(tail -n1 "$TMP" | awk -F, '{print $5}')"
+python3 - "$LAST_CLOSE" <<'PY' || { echo "$(date -Iseconds) ⚠️ bad scale (skip write)"; rm -f "$TMP"; exit 0; }
+import sys
+v=float(sys.argv[1])
+assert 5000 < v < 200000
 PY
-    # 3) atomically replace OUT
-    mv -f "$TMP_NORM" "$OUT" || true
-    rm -f "$TMP_RAW"
-  fi
 
-  sleep 5
-done
+# Atomic replace
+mv -f "$TMP" "${CSV}.tmp"
+mv -f "${CSV}.tmp" "$CSV"
+echo "$(date -Iseconds) wrote $(wc -l <"$CSV") rows → $CSV" | tee -a out/live-fetch.log

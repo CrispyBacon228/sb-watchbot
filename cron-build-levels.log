@@ -1,13 +1,5 @@
-Traceback (most recent call last):
-  File "/opt/sb-watchbot/.venv/bin/sbwatch", line 3, in <module>
-    from sbwatch.cli.main import app
-  File "/opt/sb-watchbot/src/sbwatch/cli/main.py", line 4, in <module>
-    from sbwatch.cli import levels_cmd, live_cmd, notify_cmd, replay_cmd, status_cmd
-  File "/opt/sb-watchbot/src/sbwatch/cli/live_cmd.py", line 3, in <module>
-    from sbwatch.engine.live import run_live
-  File "/opt/sb-watchbot/src/sbwatch/engine/live.py", line 8, in <module>
-    from sbwatch.strategy.ict import ICTDetector
-  File "/opt/sb-watchbot/src/sbwatch/strategy.py", line 153
-    last_alert_ts_by_dir[fvg["direction"]] = ts\1# --- reject micro FVGs before emitting ---
-                                                ^
-SyntaxError: unexpected character after line continuation character
+Usage: sbwatch [OPTIONS] COMMAND [ARGS]...
+Try 'sbwatch --help' for help.
+╭─ Error ──────────────────────────────────────────────────────────────────────╮
+│ No such command 'build-levels'.                                              │
+╰──────────────────────────────────────────────────────────────────────────────╯
