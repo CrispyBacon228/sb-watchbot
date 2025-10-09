@@ -48,10 +48,6 @@ PY
 import sys
 v=float(sys.argv[1])
 assert 5000 < v < 200000
-PY || { echo "$(date -Iseconds) ⚠️ bad scale (skip write)" | tee -a out/live-fetch.log; rm -f "$TMP_NORM"; sleep 5; continue; }
-import sys
-v=float(sys.argv[1])
-assert 5000 < v < 200000
 PY
       # 4) atomic replace
       mv -f "$TMP_NORM" "$OUT"
