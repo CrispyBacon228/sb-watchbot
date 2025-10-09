@@ -30,3 +30,12 @@ __pycache__/
 .venv/
 *.bak
 __pycache__/
+
+# Runtime & logs
+live/
+out/
+backups/
+*.log
+*.tgz
+*.tar.gz
+/tmp/replay_*.csv
