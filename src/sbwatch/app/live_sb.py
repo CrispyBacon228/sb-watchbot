@@ -4,6 +4,17 @@ from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 from urllib import request
 
+def _ensure_datetime(df):
+    try:
+        import pandas as pd
+        if "timestamp" in df.columns:
+            df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce", utc=True)
+            df.dropna(subset=["timestamp"], inplace=True)
+    except Exception:
+        pass
+    return df
+
+
 # -------- settings (mirror replay) --------
 NY = ZoneInfo("America/New_York")
 TICK = 0.25
@@ -41,11 +52,7 @@ def _coerce(df):
     return df.dropna()
 
 def load_rth(csv_path):
-    df = pd.read_csv(csv_path, parse_dates=["timestamp"])
-
-# --- ensure timestamp is true datetime (prevents .dt errors) ---
-df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce", utc=True)
-df = df.dropna(subset=["timestamp"])
+    df = _ensure_datetime(pd.read_csv(csv_path, parse_dates=["timestamp"]))
     if df["timestamp"].dt.tz is None:
         df["timestamp"] = df["timestamp"].dt.tz_localize("UTC")
     ts = df["timestamp"].dt.tz_convert(NY)
