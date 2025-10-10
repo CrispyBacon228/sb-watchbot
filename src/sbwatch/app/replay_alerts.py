@@ -46,7 +46,7 @@ def load_csv_full_then_window(path: str, debug: bool=False):
     """Load full RTH session (9:30–16:00), then make a 10–11 window view.
        Add a 'i_full' column so we can map killzone bars to full-session indices.
     """
-    df = pd.read_csv(path, parse_dates=["timestamp"])
+    df = _ensure_datetime(pd.read_csv(path, parse_dates=["timestamp"]))
     if df["timestamp"].dt.tz is None:
         df["timestamp"] = df["timestamp"].dt.tz_localize("UTC")
 
