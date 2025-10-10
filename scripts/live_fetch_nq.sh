@@ -41,7 +41,7 @@ PY
 
     if [[ -s "$TMP_NORM" ]]; then
       LAST_CLOSE="$(tail -n1 "$TMP_NORM" | awk -F, '{print $5}')"
-      python - "$LAST_CLOSE" <<'PY' || { echo "$(date -Iseconds) ⚠️ bad scale (skip write)" | tee -a out/live-fetch.log; rm -f "$TMP_NORM"; sleep 5; continue; }
+      python - "$LAST_CLOSE" <<'PY' || { echo "$(date -Iseconds) WARN: bad scale (skip write)" | tee -a out/live-fetch.log; rm -f "$TMP_NORM"; sleep 5; continue; }
 import sys
 v=float(sys.argv[1])
 assert 5000 < v < 200000
