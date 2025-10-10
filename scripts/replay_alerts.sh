@@ -20,7 +20,7 @@ done
 if [[ -n "$CSV" ]]; then
   # CSV mode: do not rebuild a day; just replay the CSV you gave me
   echo "Replaying CSV: $CSV"
-  python -m sbwatch.app.replay_alerts --csv "$CSV" --speed "$SPEED" $QUIET
+  python -m sbwatch.cli.main replay run --csv "$CSV" --speed "$SPEED" $QUIET
 else
   if [[ -z "${DATE_ARG:-}" ]]; then
     echo "error: pass a date (YYYY-MM-DD) or --csv PATH"
@@ -29,5 +29,5 @@ else
   # DATE mode: build day CSV, then replay it
   echo "Building day CSV for DATE=$DATE_ARG..."
   python -m sbwatch.app.replay_day "$DATE_ARG"
-  python -m sbwatch.app.replay_alerts --csv "out/replay_${DATE_ARG}.csv" --speed "$SPEED" $QUIET
+  python -m sbwatch.cli.main replay run --csv "out/replay_${DATE_ARG}.csv" --speed "$SPEED" $QUIET
 fi
