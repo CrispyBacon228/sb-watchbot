@@ -1,3 +1,0 @@
-usage: live_sb.py [-h] --csv CSV [--poll POLL] [--heartbeat] [--daily-pings]
-                  [--ignore-clock] [--demo-alert]
-live_sb.py: error: unrecognized arguments: --once
