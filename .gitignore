@@ -75,3 +75,4 @@ backups/
 *.tgz
 *.tar.gz
 /tmp/replay_*.csv
+*.csv
