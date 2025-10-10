@@ -13,7 +13,6 @@ mkdir -p live out
 while true; do
   DAY=$(date +%F)
 
-  # 1) fetch to TMP_RAW (Databento CLI)
   databento timeseries get \
     --dataset=GLBX.MDP3 \
     --schema=ohlcv-1m \
@@ -24,7 +23,6 @@ while true; do
     --stitch=legacy \
     --out="$TMP_RAW" >/dev/null 2>&1 || true
 
-  # 2) normalize → TMP_NORM only if we actually got rows
   if [[ -s "$TMP_RAW" ]]; then
     python - <<'PY' "$TMP_RAW" "$TMP_NORM"
 import sys, pandas as pd, os
@@ -41,7 +39,6 @@ df = df[["timestamp","open","high","low","close","volume"]].dropna()
 df.to_csv(dst, index=False)
 PY
 
-    # 3) price sanity on last row (avoid double scaling)
     if [[ -s "$TMP_NORM" ]]; then
       LAST_CLOSE="$(tail -n1 "$TMP_NORM" | awk -F, '{print $5}')"
       python - "$LAST_CLOSE" <<'PY' || { echo "$(date -Iseconds) ⚠️ bad scale (skip write)" | tee -a out/live-fetch.log; rm -f "$TMP_NORM"; sleep 5; continue; }
@@ -49,7 +46,6 @@ import sys
 v=float(sys.argv[1])
 assert 5000 < v < 200000
 PY
-      # 4) atomic replace
       mv -f "$TMP_NORM" "$OUT"
       echo "$(date -Iseconds) wrote $(wc -l <"$OUT") rows → $OUT" | tee -a out/live-fetch.log
     fi
