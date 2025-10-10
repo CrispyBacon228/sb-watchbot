@@ -39,3 +39,12 @@ backups/
 *.tgz
 *.tar.gz
 /tmp/replay_*.csv
+
+# runtime
+live/
+out/
+backups/
+*.log
+*.tgz
+*.tar.gz
+/tmp/replay_*.csv
