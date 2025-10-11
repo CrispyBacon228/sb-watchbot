@@ -3,6 +3,15 @@ import datetime as dt
 from zoneinfo import ZoneInfo
 from sbwatch.data.db_fetch import fetch_range
 
+
+from datetime import datetime, date
+try:
+    from zoneinfo import ZoneInfo
+except Exception:
+    from backports.zoneinfo import ZoneInfo
+ET = ZoneInfo("America/New_York")
+def _is_weekend(d: date) -> bool: return d.weekday() >= 5
+
 ET = ZoneInfo("America/New_York")
 
 def et_window_to_utc(the_date: dt.date, start_et="09:30", end_et="11:05"):
