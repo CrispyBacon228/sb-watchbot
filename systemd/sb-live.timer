@@ -1,0 +1,10 @@
+[Unit]
+Description=Run SB Live during 10:00–11:00 ET (start 09:59:30) Mon-Fri
+
+[Timer]
+OnCalendar=Mon..Fri *-*-* 09:59:30
+Persistent=true
+Unit=sb-live.service
+
+[Install]
+WantedBy=timers.target

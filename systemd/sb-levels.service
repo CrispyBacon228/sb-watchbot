@@ -1,0 +1,11 @@
+[Unit]
+Description=SB Simple - Build Levels (Databento REST)
+After=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/sb-simple
+Environment="PYTHONUNBUFFERED=1"
+ExecStart=/opt/sb-simple/.venv/bin/python /opt/sb-simple/sb_bot.py --build-levels
+StandardOutput=append:/opt/sb-simple/logs/levels.log
+StandardError=append:/opt/sb-simple/logs/levels.log

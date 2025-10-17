@@ -1,0 +1,11 @@
+[Unit]
+Description=SB Simple - Live Alerts (Databento Live)
+After=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/sb-simple
+Environment="PYTHONUNBUFFERED=1"
+ExecStart=/opt/sb-simple/.venv/bin/python /opt/sb-simple/sb_bot.py --live
+StandardOutput=append:/opt/sb-simple/logs/live.log
+StandardError=append:/opt/sb-simple/logs/live.log

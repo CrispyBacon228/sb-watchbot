@@ -1,0 +1,10 @@
+[Unit]
+Description=Run SB Levels at 09:40 ET (Mon-Fri)
+
+[Timer]
+OnCalendar=Mon..Fri *-*-* 09:40:00
+Persistent=true
+Unit=sb-levels.service
+
+[Install]
+WantedBy=timers.target
