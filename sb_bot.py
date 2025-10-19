@@ -187,44 +187,82 @@ def _swept_any(c: Candle, levels: Dict[str, float], direction: str) -> bool:
         # wick above any candidate and close back below it
         return any((c.h > L and c.c < L) for L in candidates)
 
+
 def live_run():
+    import json, os, datetime as dt
+    # Ensure logs dir
+    os.makedirs(os.path.join(BASE_DIR, "logs"), exist_ok=True)
+    log_path = os.path.join(BASE_DIR, "logs", "live.log")
+    log = open(log_path, "a", buffering=1)  # line-buffered
+
+    # Load levels
     with open(os.path.join(BASE_DIR, "data", "levels.json")) as f:
         levels = json.load(f)["levels"]
 
+    # Log the loaded levels for visibility
+    def _fmt(x): 
+        try: return f"{float(x):.2f}"
+        except: return str(x)
+    log.write("[CHECK] Loaded levels -> "
+              f"box_high={_fmt(levels.get('box_high'))} "
+              f"box_low={_fmt(levels.get('box_low'))} "
+              f"pdh={_fmt(levels.get('pdh'))} "
+              f"pdl={_fmt(levels.get('pdl'))} "
+              f"asia_high={_fmt(levels.get('asia_high'))} "
+              f"asia_low={_fmt(levels.get('asia_low'))} "
+              f"london_high={_fmt(levels.get('london_high'))} "
+              f"london_low={_fmt(levels.get('london_low'))}\n")
+
+    # Time window (supports LIVE_START/LIVE_END overrides for testing)
     today = now_et().date()
-    start_et = ET.localize(dt.datetime.combine(today, dt.time(10, 0)))
-    end_et   = ET.localize(dt.datetime.combine(today, dt.time(11, 0)))
+    _ls = os.getenv("LIVE_START", "10:00")
+    _le = os.getenv("LIVE_END",   "11:00")
+    _h1,_m1 = map(int, _ls.split(":"))
+    _h2,_m2 = map(int, _le.split(":"))
+    start_et = ET.localize(dt.datetime.combine(today, dt.time(_h1,_m1)))
+    end_et   = ET.localize(dt.datetime.combine(today, dt.time(_h2,_m2)))
+    log.write(f"[CHECK] Starting live from {_ls} to {_le} (ET) ...\n")
 
     now = now_et()
     if now < start_et:
-        dsend(f"🟡 SB Live waiting for 10:00 ET on {today} …")
-        while now_et() < start_et: time.sleep(1)
+        dsend(f"🟡 SB Live waiting for {_ls}–{_le} ET…")
+        while now_et() < start_et:
+            time.sleep(1)
     elif now >= end_et:
         dsend("⏹️ SB Live skipped: window ended.")
+        log.write("[CHECK] Window already ended — skipping.\n")
+        log.close()
         return
 
     client = Live(DB_API_KEY)
     client.subscribe(dataset=DATASET, schema=SCHEMA, symbols=[SYMBOL])
-    dsend(f"🟢 SB Live started for {SYMBOL} | 10:00–11:00 ET")
+    dsend(f"🟢 SB Live started for {SYMBOL} | Window: {_ls}–{_le} ET")
 
     buf: List[Candle] = []
     fired_bull = False
     fired_bear = False
 
     for msg in client:
-        c = record_to_candle(msg)  # applies divisor here too
-        if not c: continue
+        c = record_to_candle(msg)  # divisor applied here
+        if not c:
+            continue
 
-        if c.ts < start_et: continue
+        # Log every single bar
+        log.write(f"[BAR] {c.ts.strftime('%H:%M:%S')} "
+                  f"O:{c.o:.2f} H:{c.h:.2f} L:{c.l:.2f} C:{c.c:.2f}\n")
+
+        if c.ts < start_et:
+            continue
         if c.ts >= end_et:
-            dsend("⏹️ SB Live ending: 11:00 ET window complete.")
+            dsend("⏹️ SB Live ending: window complete.")
+            log.write("[CHECK] Live run finished.\n")
             break
 
         buf.append(c)
-        if len(buf) < 3: continue
+        if len(buf) < 3:
+            continue
 
         c1, c2, c3 = buf[-3], buf[-2], buf[-1]
-
         bull_sweep = _swept_any(c3, levels, "bull")
         bear_sweep = _swept_any(c3, levels, "bear")
 
@@ -240,6 +278,7 @@ def live_run():
                 f"Swept: BOX/Asia/London/PDL (as enabled)\n"
                 f"Bar: {c3.ts.strftime('%H:%M')} ET"
             )
+            log.write(f"[ALERT] LONG entry={entry:.2f} sl={sl:.2f} tp1={(entry+rr):.2f} tp2={(entry+2*rr):.2f}\n")
             fired_bull = True
 
         if kind == "bear" and bear_sweep and not fired_bear:
@@ -252,10 +291,13 @@ def live_run():
                 f"Swept: BOX/Asia/London/PDH (as enabled)\n"
                 f"Bar: {c3.ts.strftime('%H:%M')} ET"
             )
+            log.write(f"[ALERT] SHORT entry={entry:.2f} sl={sl:.2f} tp1={(entry-rr):.2f} tp2={(entry-2*rr):.2f}\n")
             fired_bear = True
 
         if len(buf) > MAX_LOOKBACK_MIN:
             buf = buf[-MAX_LOOKBACK_MIN:]
+    log.close()
+
 
 def levels_cmd():
     levels = build_levels_for_today()
