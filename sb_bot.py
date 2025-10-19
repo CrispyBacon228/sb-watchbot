@@ -188,21 +188,22 @@ def _swept_any(c: Candle, levels: Dict[str, float], direction: str) -> bool:
         return any((c.h > L and c.c < L) for L in candidates)
 
 
+
 def live_run():
-    import json, os, datetime as dt
+    import json, os, datetime as dt, time
     # Ensure logs dir
     os.makedirs(os.path.join(BASE_DIR, "logs"), exist_ok=True)
     log_path = os.path.join(BASE_DIR, "logs", "live.log")
-    log = open(log_path, "a", buffering=1)  # line-buffered
+    log = open(log_path, "a", buffering=1)
 
     # Load levels
     with open(os.path.join(BASE_DIR, "data", "levels.json")) as f:
         levels = json.load(f)["levels"]
 
-    # Log the loaded levels for visibility
-    def _fmt(x): 
+    def _fmt(x):
         try: return f"{float(x):.2f}"
         except: return str(x)
+
     log.write("[CHECK] Loaded levels -> "
               f"box_high={_fmt(levels.get('box_high'))} "
               f"box_low={_fmt(levels.get('box_low'))} "
@@ -213,7 +214,7 @@ def live_run():
               f"london_high={_fmt(levels.get('london_high'))} "
               f"london_low={_fmt(levels.get('london_low'))}\n")
 
-    # Time window (supports LIVE_START/LIVE_END overrides for testing)
+    # Window (supports LIVE_START/LIVE_END overrides)
     today = now_et().date()
     _ls = os.getenv("LIVE_START", "10:00")
     _le = os.getenv("LIVE_END",   "11:00")
@@ -225,36 +226,45 @@ def live_run():
 
     now = now_et()
     if now < start_et:
-        dsend(f"🟡 SB Live waiting for {_ls}–{_le} ET…")
+        dsend(f"🟢 Live monitoring started ({_ls}–{_le} ET). Strategy armed.")
         while now_et() < start_et:
             time.sleep(1)
     elif now >= end_et:
-        dsend("⏹️ SB Live skipped: window ended.")
+        dsend("⏹️ Live session skipped: window already ended.")
         log.write("[CHECK] Window already ended — skipping.\n")
         log.close()
         return
 
     client = Live(DB_API_KEY)
     client.subscribe(dataset=DATASET, schema=SCHEMA, symbols=[SYMBOL])
-    dsend(f"🟢 SB Live started for {SYMBOL} | Window: {_ls}–{_le} ET")
+
+    # Trade counters to drive end-of-session summary
+    trades_total = 0
+    trades_long = 0
+    trades_short = 0
 
     buf: List[Candle] = []
-    fired_bull = False
+    fired_bull = False  # prevent duplicate same-direction in a row
     fired_bear = False
 
     for msg in client:
-        c = record_to_candle(msg)  # divisor applied here
+        c = record_to_candle(msg)
         if not c:
             continue
 
-        # Log every single bar
-        log.write(f"[BAR] {c.ts.strftime('%H:%M:%S')} "
-                  f"O:{c.o:.2f} H:{c.h:.2f} L:{c.l:.2f} C:{c.c:.2f}\n")
+        # Log every bar
+        log.write(f"[BAR] {c.ts.strftime('%H:%M:%S')} O:{c.o:.2f} H:{c.h:.2f} L:{c.l:.2f} C:{c.c:.2f}\n")
 
+        # Guard window bounds
         if c.ts < start_et:
             continue
         if c.ts >= end_et:
-            dsend("⏹️ SB Live ending: window complete.")
+            # Post end-of-session summary based on trades seen
+            if trades_total == 0:
+                dsend("⛔ Session complete — no valid Silver Bullet setup triggered today.")
+            else:
+                dsend(f"✅ Session complete — {trades_total} setup(s) triggered "
+                      f"(L:{trades_long} / S:{trades_short}).")
             log.write("[CHECK] Live run finished.\n")
             break
 
@@ -272,27 +282,29 @@ def live_run():
             sl = min(c1.l, c2.l, c3.l) - TICK_SIZE
             rr = entry - sl
             dsend(
-                f"🟢 **SB Long** {SYMBOL}\n"
-                f"Entry (FVG MT): {entry:.2f} | SL: {sl:.2f}\n"
-                f"TP1 (1R): {entry+rr:.2f} | TP2 (2R): {entry+2*rr:.2f}\n"
-                f"Swept: BOX/Asia/London/PDL (as enabled)\n"
+                f"🟢 Long setup — entry (FVG mean): {entry:.2f}\n"
+                f"SL: {sl:.2f} | TP1 (1R): {entry+rr:.2f} | TP2 (2R): {entry+2*rr:.2f}\n"
                 f"Bar: {c3.ts.strftime('%H:%M')} ET"
             )
             log.write(f"[ALERT] LONG entry={entry:.2f} sl={sl:.2f} tp1={(entry+rr):.2f} tp2={(entry+2*rr):.2f}\n")
+            trades_total += 1
+            trades_long  += 1
             fired_bull = True
+            fired_bear = False  # allow flip
 
         if kind == "bear" and bear_sweep and not fired_bear:
             sl = max(c1.h, c2.h, c3.h) + TICK_SIZE
             rr = sl - entry
             dsend(
-                f"🔴 **SB Short** {SYMBOL}\n"
-                f"Entry (FVG MT): {entry:.2f} | SL: {sl:.2f}\n"
-                f"TP1 (1R): {entry-rr:.2f} | TP2 (2R): {entry-2*rr:.2f}\n"
-                f"Swept: BOX/Asia/London/PDH (as enabled)\n"
+                f"🔴 Short setup — entry (FVG mean): {entry:.2f}\n"
+                f"SL: {sl:.2f} | TP1 (1R): {entry-rr:.2f} | TP2 (2R): {entry-2*rr:.2f}\n"
                 f"Bar: {c3.ts.strftime('%H:%M')} ET"
             )
             log.write(f"[ALERT] SHORT entry={entry:.2f} sl={sl:.2f} tp1={(entry-rr):.2f} tp2={(entry-2*rr):.2f}\n")
+            trades_total += 1
+            trades_short += 1
             fired_bear = True
+            fired_bull = False  # allow flip
 
         if len(buf) > MAX_LOOKBACK_MIN:
             buf = buf[-MAX_LOOKBACK_MIN:]
