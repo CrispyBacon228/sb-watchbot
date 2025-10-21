@@ -194,7 +194,8 @@ def levels_cmd():
             v = levels.get(k)
             if v is not None:
                 lines.append(f"`{k}`: {v:.2f}")
-        _post_to_discord("\n".join(lines))
+        _post_to_discord("
+".join(lines))
 
     print(json.dumps({"ok": True, "levels": levels}, indent=2))
 def fetch_ohlcv_1m_safe(start, end):
@@ -301,16 +302,3 @@ def _post_to_discord(msg: str):
     req = _ur.Request(wh, data=data, headers={"Content-Type":"application/json"})
     try: _ur.urlopen(req, timeout=5).read()
     except Exception: pass
-
-if __name__ == "__main__":
-    import argparse
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--build-levels", action="store_true")
-    ap.add_argument("--live", action="store_true")
-    args = ap.parse_args()
-    if args.build_levels:
-        levels_cmd()
-    elif args.live:
-        live_cmd()
-    else:
-        print("Nothing to do. Use --build-levels or --live")
