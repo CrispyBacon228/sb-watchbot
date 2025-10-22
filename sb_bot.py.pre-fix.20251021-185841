@@ -1,6 +1,30 @@
-from sbwatch.live_adapter import iter_live_bars, Bar
 #!/usr/bin/env python3
 import os, sys, json, time, datetime as dt
+
+# === SB simple: shared locations / helpers ===
+import os, json, pathlib
+BASE_DIR = os.environ.get("SB_BASE_DIR", "/opt/sb-simple")
+LEVELS_PATH = pathlib.Path(BASE_DIR) / "data" / "levels.json"
+
+def load_levels_json():
+    """Load levels.json written by the levels service."""
+    try:
+        with open(LEVELS_PATH, "r", encoding="utf-8") as f:
+            d = json.load(f)
+        return d.get("levels", d)  # allow {"levels": {...}} or plain dict
+    except Exception as e:
+        print(f"[ERR] Could not read {LEVELS_PATH}: {e}")
+        return {}
+
+def pick_calendar_levels(lv):
+    """Return only the 6 calendar keys we want to use in LIVE."""
+    want = ["pdh","pdl","asia_high","asia_low","london_high","london_low"]
+    out = {}
+    for k in want:
+        v = lv.get(k)
+        if v is not None:
+            out[k] = float(v)
+    return out
 from dataclasses import dataclass
 from typing import List, Dict, Tuple, Optional
 
@@ -114,7 +138,7 @@ def build_levels_for_today_simple() -> Dict[str, float]:
 
     # 1) 09:00–09:59 box (pre-10am)
     box_s, box_e = bounds_et(today, "09:00", "09:59")
-    box_high = box_low = None  # box disabled: no fetch
+    box_high = box_low = None  # box disabled completely for LIVE
 
     # 2) PDH/PDL from prior regular session (09:30–16:00 previous weekday)
     prior = today - dt.timedelta(days=1)
@@ -305,13 +329,13 @@ def _post_to_discord(msg: str):
 
 if __name__ == "__main__":
     import argparse
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--build-levels", action="store_true")
-    ap.add_argument("--live", action="store_true")
-    args = ap.parse_args()
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--build-levels", action="store_true")
+    parser.add_argument("--live", action="store_true")
+    args = parser.parse_args()
     if args.build_levels:
         levels_cmd()
     elif args.live:
         levels_cmd()
     else:
-        print("Nothing to do. Use --build-levels or --live")
+        print("No valid flag provided. Use --build-levels or --live.")
