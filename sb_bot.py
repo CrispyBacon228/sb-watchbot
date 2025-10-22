@@ -312,6 +312,6 @@ if __name__ == "__main__":
     if args.build_levels:
         levels_cmd()
     elif args.live:
-        levels_cmd()
+        live_cmd()
     else:
         print("Nothing to do. Use --build-levels or --live")
