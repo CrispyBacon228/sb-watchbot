@@ -305,62 +305,6 @@ def _post_to_discord(msg: str):
     req = _ur.Request(wh, data=data, headers={"Content-Type":"application/json"})
     try: _ur.urlopen(req, timeout=5).read()
     except Exception: pass
-def live_cmd():
-    """Load today's levels.json, then stream scaled OHLC bars via adapter."""
-    import sys, datetime as dt
-    from pathlib import Path
-        return
-    try:
-        payload = json.loads(levels_path.read_text(encoding="utf-8"))
-    except Exception as e:
-        print(f"[LIVE] failed to read levels.json: {e}", file=sys.stderr)
-        return
-
-    levels = payload.get("levels", {}) or {}
-    date_str = payload.get("date")
-    ET = ZoneInfo("America/New_York")
-    today_et = dt.datetime.now(tz=ET).date().isoformat()
-    if date_str and date_str != today_et:
-        print(f"[LIVE] WARNING: levels.json is {date_str}, today is {today_et}", file=sys.stderr)
-
-    print("[LIVE] Loaded levels:", json.dumps(levels, sort_keys=True))
-
-    # Stream bars; systemd RuntimeMaxSec bounds the window for the service
-    for bar in iter_live_bars(run_seconds=None):
-        try:
-            process_live_bar(bar.ts_epoch_ms, bar.open, bar.high, bar.low, bar.close, levels)
-        except Exception as e:
-            print(f"[LIVE] strategy error: {e}", file=sys.stderr)
-            continue
-
-
-def live_cmd():
-    """Load today's levels.json then stream scaled OHLC bars via adapter."""
-    import sys, json, datetime as dt
-    levels_path = Path(BASE_DIR) / 'data' / 'levels.json'
-    if not levels_path.exists():
-        print("[LIVE] levels.json missing — run --build-levels first.", file=sys.stderr)
-        return
-    try:
-        payload = json.loads(levels_path.read_text(encoding='utf-8'))
-    except Exception as e:
-        print(f"[LIVE] failed to read levels.json: {e}", file=sys.stderr)
-        return
-
-    levels = (payload.get('levels') or {})
-    date_str = payload.get('date')
-    ET = ZoneInfo('America/New_York')
-    today_et = dt.datetime.now(tz=ET).date().isoformat()
-    if date_str and date_str != today_et:
-        print(f"[LIVE] WARNING: levels.json is {date_str}, today is {today_et}", file=sys.stderr)
-
-    # Stream bars; systemd RuntimeMaxSec caps runtime in service mode
-    for bar in iter_live_bars(run_seconds=None):
-        try:
-            process_live_bar(bar.ts_epoch_ms, bar.open, bar.high, bar.low, bar.close, levels)
-        except Exception as e:
-            print(f"[LIVE] strategy error: {e}", file=sys.stderr)
-            continue
 
 
 
