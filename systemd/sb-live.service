@@ -4,8 +4,14 @@ After=network-online.target
 
 [Service]
 Type=simple
+EnvironmentFile=/etc/sb-watchbot.env
+Environment=PYTHONPATH=/opt/sb-simple/src
 WorkingDirectory=/opt/sb-simple
-Environment="PYTHONUNBUFFERED=1"
-ExecStart=/opt/sb-simple/.venv/bin/python /opt/sb-simple/sb_bot.py --live
-StandardOutput=append:/opt/sb-simple/logs/live.log
-StandardError=append:/opt/sb-simple/logs/live.log
+ExecStart=/opt/sb-simple/.venv/bin/python /opt/sb-simple/run_live.py
+RuntimeMaxSec=3720
+Restart=no
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
