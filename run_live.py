@@ -1,7 +1,7 @@
-from sbwatch import notify
+#!/usr/bin/env python3
 from __future__ import annotations
 
-# --- keep src/ on sys.path (belt+suspenders when unit PYTHONPATH not present) ---
+# keep src/ on sys.path so imports work under systemd
 from pathlib import Path
 import sys
 BASE_DIR = Path(__file__).resolve().parent
@@ -9,14 +9,16 @@ SRC = BASE_DIR / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-import os, json, datetime as dt
+import json, datetime as dt
 from zoneinfo import ZoneInfo
+
+from sbwatch import notify
 from sbwatch.live_adapter import iter_live_bars
 from sbwatch.strategy import SBEngine
 
 ET = ZoneInfo("America/New_York")
 
-def _load_levels():
+def _load_levels() -> dict:
     p = BASE_DIR / "data" / "levels.json"
     if not p.exists():
         raise FileNotFoundError("data/levels.json not found. run --build-levels first.")
@@ -29,40 +31,33 @@ def _load_levels():
     print("[LIVE] Loaded levels:", json.dumps(levels, sort_keys=True))
     return levels
 
-def main():
+def main() -> None:
     levels = _load_levels()
     eng = SBEngine(levels)
-    
-# --- SB live session alert state ---
-_ET = ZoneInfo("America/New_York")
-_armed_sent = False
-# we will rely on notify.has_entry_today() which reads the daily flag created by notify.post_entry()
-for bar in iter_live_bars(run_seconds=None):
-        # -- per-bar session alerts --
-        # Extract timestamp in ms from your bar object; adjust field as needed:
-        try:
-            ts_ms = bar.ts_ms
-        except AttributeError:
-            try:
-                ts_ms = bar.ts_epoch_ms
-            except AttributeError:
-                # LAST resort: assume bar.ts is seconds
-                ts_ms = int(getattr(bar, "ts", 0)) * 1000
 
-        import datetime as _dt
-        dt_et = _dt.datetime.fromtimestamp(ts_ms/1000, tz=_ET)
+    armed_sent = False
+    for bar in iter_live_bars(run_seconds=None):
+        # normalize ts to ms
+        ts_ms = getattr(bar, "ts_epoch_ms", None)
+        if ts_ms is None:
+            ts = getattr(bar, "ts_ms", None)
+            ts_ms = int(ts) if ts is not None else int(getattr(bar, "ts", 0)) * 1000
 
-        # 10:00 ET 'ARMED' (once)
-        if not _armed_sent and (dt_et.hour>10 or (dt_et.hour==10 and dt_et.minute>=0)):
+        dt_et = dt.datetime.fromtimestamp(ts_ms/1000, tz=ET)
+
+        # 10:00 ET — ARMED (once)
+        if not armed_sent and (dt_et.hour > 10 or (dt_et.hour == 10 and dt_et.minute >= 0)):
             notify.post_system_armed(when=ts_ms)
-            _armed_sent = True
+            armed_sent = True
 
-        # 11:01 ET 'NO SB' if no entry flag
-        if dt_et.hour>11 or (dt_et.hour==11 and dt_et.minute>=1):
+        # 11:01 ET — if no entry happened, post NO SB and exit
+        if dt_et.hour > 11 or (dt_et.hour == 11 and dt_et.minute >= 1):
             if not notify.has_entry_today(ts_ms):
                 notify.post_no_sb(when=ts_ms)
             break
-        eng.on_bar(bar.ts_epoch_ms, bar.open, bar.high, bar.low, bar.close)
+
+        # strategy tick
+        eng.on_bar(ts_ms, bar.open, bar.high, bar.low, bar.close)
 
 if __name__ == "__main__":
     try:
