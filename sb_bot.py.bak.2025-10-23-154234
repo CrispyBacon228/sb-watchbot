@@ -1,11 +1,7 @@
 from zoneinfo import ZoneInfo
 from pathlib import Path
 import json
-try:
-    from sbwatch.live_adapter import iter_live_bars, Bar
-except Exception:
-    iter_live_bars = None
-    Bar = None
+from sbwatch.live_adapter import iter_live_bars, Bar
 #!/usr/bin/env python3
 import os, sys, json, time, datetime as dt
 from dataclasses import dataclass
@@ -313,7 +309,7 @@ def live_cmd():
     """Load today's levels.json, then stream scaled OHLC bars via adapter."""
     import sys, datetime as dt
     from pathlib import Path
-    levels_path = Path("data/levels.json")
+        return
     try:
         payload = json.loads(levels_path.read_text(encoding="utf-8"))
     except Exception as e:

@@ -5,7 +5,6 @@ import os, time, math
 from datetime import datetime
 from zoneinfo import ZoneInfo
 from sbwatch.notify import post_discord
-from sbwatch import notify
 
 ET = ZoneInfo("America/New_York")
 
@@ -43,30 +42,18 @@ class PendingSB:
 class SBEngine:
     def __init__(self, levels: Dict[str, float]):
         self.levels_raw = levels
-
-        # Accept both flat and nested ("levels") shapes
-        raw_levels: Dict[str, float] = {}
-        if isinstance(levels, dict):
-            # flat keys
-            for k, v in levels.items():
-                if k in LEVEL_KEYS and v is not None:
-                    raw_levels[k] = v
-            # nested under "levels"
-            L = levels.get("levels") if isinstance(levels.get("levels"), dict) else None
-            if isinstance(L, dict):
-                for k, v in L.items():
-                    if k in LEVEL_KEYS and v is not None:
-                        raw_levels[k] = v
-
-        self.levels = {k: float(v) for k, v in raw_levels.items()}
-
+        raw_levels = {}
+if isinstance(levels, dict):
+    raw_levels.update({k:v for k,v in levels.items() if k in LEVEL_KEYS and v is not None})
+    L = levels.get('levels') if 'levels' in levels and isinstance(levels['levels'], dict) else {}
+    raw_levels.update({k:v for k,v in L.items() if k in LEVEL_KEYS and v is not None})
+self.levels = {k: float(v) for k,v in raw_levels.items() if v is not None}
         self.bars: List[Bar] = []
         self.body_hist: List[float] = []
         self.swings = SwingState()
         self.pending: Optional[PendingSB] = None
 
-# -------- helpers --------
-
+    # ---------- helpers ----------
     def _et_in_window(self, ts_ms: int) -> bool:
         if not ENFORCE_WINDOW:
             return True
@@ -166,16 +153,12 @@ class SBEngine:
                 self.pending = None
 
     def _emit_entry(self, side: str, i: int, p: PendingSB):
-
         b = self.bars[i]
+        ts = datetime.fromtimestamp(b.ts_ms/1000, tz=ET).isoformat()
+        print(f"[SB-ENTRY] {ts} side={side} entry={b.c:.2f} fvg=({p.fvg_top:.2f},{p.fvg_bot:.2f}) "
+              f"sl={p.sl:.2f} target~{p.target_hint:.2f}", flush=True)
 
-        when_ms = b.ts_ms
-
-        # You can set a real label from your sweep detector; fallback keeps message sane
-
-        sweep_label = p.sweep_label if hasattr(p, 'sweep_label') and p.sweep_label else ("ASIA LOW" if side=="long" else "ASIA HIGH")
-
-        notify.post_entry(side=side, entry=b.c, sl=p.sl, tp=p.target_hint, sweep_label=sweep_label, when=when_ms)
+    # public API used by run_live.py
     def on_bar(self, ts_ms: int, o: float, h: float, l: float, c: float):
         # window gate (optional)
         if not self._et_in_window(ts_ms):
@@ -199,12 +182,6 @@ class SBEngine:
             self._update_swings(i-1)
 
         # 2) look for displacement candle (this bar qualifies *or* wait for next bar)
-        # Seed swings from prior bars if not initialized (prevents NaN -> takes_swing=False)
-        import math
-        if math.isnan(self.swings.last_high) or math.isnan(self.swings.last_low):
-            if i >= 1:
-                self.swings.last_high = max(x.h for x in self.bars[:i])
-                self.swings.last_low  = min(x.l for x in self.bars[:i])
         if not self._is_displacement(i, side):
             return
 

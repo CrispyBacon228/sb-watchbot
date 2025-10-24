@@ -1,3 +1,4 @@
+from sbwatch import notify
 from __future__ import annotations
 
 # --- keep src/ on sys.path (belt+suspenders when unit PYTHONPATH not present) ---
@@ -31,7 +32,36 @@ def _load_levels():
 def main():
     levels = _load_levels()
     eng = SBEngine(levels)
-    for bar in iter_live_bars(run_seconds=None):
+    
+# --- SB live session alert state ---
+_ET = ZoneInfo("America/New_York")
+_armed_sent = False
+# we will rely on notify.has_entry_today() which reads the daily flag created by notify.post_entry()
+for bar in iter_live_bars(run_seconds=None):
+        # -- per-bar session alerts --
+        # Extract timestamp in ms from your bar object; adjust field as needed:
+        try:
+            ts_ms = bar.ts_ms
+        except AttributeError:
+            try:
+                ts_ms = bar.ts_epoch_ms
+            except AttributeError:
+                # LAST resort: assume bar.ts is seconds
+                ts_ms = int(getattr(bar, "ts", 0)) * 1000
+
+        import datetime as _dt
+        dt_et = _dt.datetime.fromtimestamp(ts_ms/1000, tz=_ET)
+
+        # 10:00 ET 'ARMED' (once)
+        if not _armed_sent and (dt_et.hour>10 or (dt_et.hour==10 and dt_et.minute>=0)):
+            notify.post_system_armed(when=ts_ms)
+            _armed_sent = True
+
+        # 11:01 ET 'NO SB' if no entry flag
+        if dt_et.hour>11 or (dt_et.hour==11 and dt_et.minute>=1):
+            if not notify.has_entry_today(ts_ms):
+                notify.post_no_sb(when=ts_ms)
+            break
         eng.on_bar(bar.ts_epoch_ms, bar.open, bar.high, bar.low, bar.close)
 
 if __name__ == "__main__":
