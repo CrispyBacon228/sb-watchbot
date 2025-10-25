@@ -7,8 +7,8 @@ from zoneinfo import ZoneInfo
 ET = ZoneInfo("America/New_York")
 ROOT = Path(__file__).resolve().parents[1]
 
-from src.sbwatch.strategy import SBEngine as _SBEngine
-from src.sbwatch import notify as _notify
+from sbwatch.strategy import SBEngine as _SBEngine
+from sbwatch import notify as _notify
 
 _real_post = _notify.post_discord
 def _wrapped_post(msg: str):

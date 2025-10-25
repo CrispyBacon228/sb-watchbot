@@ -51,7 +51,7 @@ def main() -> None:
             armed_sent = True
 
         # 11:01 ET — if no entry happened, post NO SB and exit
-        if dt_et.hour > 11 or (dt_et.hour == 11 and dt_et.minute >= 1):
+        if dt_et.hour > 11 or (dt_et.hour == 11 and dt_et.minute >= 2):
             if not notify.has_entry_today(ts_ms):
                 notify.post_no_sb(when=ts_ms)
             break

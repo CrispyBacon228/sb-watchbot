@@ -1,0 +1,18 @@
+[TRACE] levels: {'pdh': 25330.0, 'pdl': 24937.0, 'asia_high': 25330.0, 'asia_low': 25284.75, 'london_high': 25381.5, 'london_low': 25324.0, 'am_high': None, 'am_low': None}
+Traceback (most recent call last):
+  File "/opt/sb-simple/probes/strategy_deeptrace.py", line 126, in <module>
+    main()
+  File "/opt/sb-simple/probes/strategy_deeptrace.py", line 122, in main
+    for ts,o,h,l,c in src:
+  File "/opt/sb-simple/probes/strategy_deeptrace.py", line 46, in iter_stdin
+    o=json.loads(line)
+      ^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/json/__init__.py", line 346, in loads
+    return _default_decoder.decode(s)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/json/decoder.py", line 337, in decode
+    obj, end = self.raw_decode(s, idx=_w(s, 0).end())
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/json/decoder.py", line 355, in raw_decode
+    raise JSONDecodeError("Expecting value", s, err.value) from None
+json.decoder.JSONDecodeError: Expecting value: line 1 column 1 (char 0)
