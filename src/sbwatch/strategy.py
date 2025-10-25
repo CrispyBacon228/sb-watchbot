@@ -1,237 +1,176 @@
 from __future__ import annotations
-from dataclasses import dataclass
-from typing import Dict, List, Optional, Tuple
-import os, time, math
-from datetime import datetime
+import os, datetime as dt
 from zoneinfo import ZoneInfo
-from sbwatch.notify import post_discord
-from sbwatch import notify
+
+# Public API expected by the rest of your app:
+# - class SBEngine(levels: dict)
+# - method on_bar(ts_ms:int, o:float, h:float, l:float, c:float)
+# - calls sbwatch.notify.post_entry(...) when an entry qualifies
 
 ET = ZoneInfo("America/New_York")
 
-# --- Tunables (safe defaults) ---
-DISPLACEMENT_BODY_MULT   = float(os.getenv("SB_BODY_MULT", "1.6"))   # body > X * 10-bar median body
-FVG_LOOKBACK_BARS        = int(os.getenv("SB_FVG_LOOKBACK", "10"))   # use last N bars for body median
-MAX_BARS_TO_TAG_FVG      = int(os.getenv("SB_FVG_MAX_WAIT", "6"))    # time to get the FVG retest
-ENFORCE_WINDOW           = os.getenv("SB_ENFORCE_WINDOW", "0") == "1" # set to 1 to enforce 10-11 ET
-WINDOW_START_HHMM        = os.getenv("SB_WINDOW_START", "10:00")      # if enforced
-WINDOW_END_HHMM          = os.getenv("SB_WINDOW_END",   "11:00")
+def _f(v, d): 
+    try: return float(os.environ.get(v, d))
+    except: return float(d)
 
-# Liquidity levels we’ll consider
-LEVEL_KEYS = [
-    "pdh","pdl","asia_high","asia_low","london_high","london_low"
-]
+def _i(v, d):
+    try: return int(os.environ.get(v, d))
+    except: return int(d)
 
-@dataclass
-class Bar:
-    ts_ms: int
-    o: float; h: float; l: float; c: float
+def _b(v, d="0"):
+    return os.environ.get(v, d) in ("1","true","TRUE","yes","Yes")
 
-@dataclass
-class SwingState:
-    last_high: float = math.nan
-    last_low: float  = math.nan
+def _t(str_hm: str|None, default: dt.time) -> dt.time:
+    if not str_hm: return default
+    return dt.time.fromisoformat(str_hm)
 
-@dataclass
-class PendingSB:
-    side: str                          # 'long' or 'short'
-    disp_bar_i: int                    # index at which displacement occurred
-    fvg_top: float; fvg_bot: float     # gap bounds (top > bot)
-    sl: float; target_hint: float      # suggested SL and nearest opposite liquidity
-    created_ms: int
+FVG_MODE             = os.environ.get("FVG_MODE", "3C").upper()            # "3C" (default) or "2C"
+SB_FVG_MIN           = _f("SB_FVG_MIN", "0.15")                            # gap size in points
+SB_DISPLACEMENT_MIN  = _f("SB_DISPLACEMENT_MIN", "0.30")                   # body/range threshold
+SB_RET_MAX_BARS      = _i("SB_RET_MAX_BARS", "20")                         # return must occur within N bars
+INTERNAL_SWEEP_PRE10 = _b("INTERNAL_SWEEP_PRE10", "1")                     # default ON to match probes
+WINDOW_START         = _t(os.environ.get("WINDOW_START", "10:00"), dt.time(0,0))
+WINDOW_END           = _t(os.environ.get("WINDOW_END",   "11:00"), dt.time(23,59,59))
+
+def _in_entry_window(ts_ms:int)->bool:
+    t = dt.datetime.fromtimestamp(ts_ms/1000, tz=ET).time()
+    return WINDOW_START <= t <= WINDOW_END
+
+def _iso(ts_ms:int)->str:
+    return dt.datetime.fromtimestamp(ts_ms/1000, tz=ET).strftime("%H:%M:%S")
 
 class SBEngine:
-    def __init__(self, levels: Dict[str, float]):
-        self.levels_raw = levels
+    """
+    Probe-parity strategy engine:
+      - 3C FVG (default): displacement on bar B; bullish if C.low > A.high; bearish if A.low > C.high
+      - 2C FVG (optional via FVG_MODE=2C): displacement on current C; bullish if C.low > B.high; bearish if B.low > C.high
+      - Sweeps: PDH/PDL, Asia high/low, London high/low, plus optional pre-10 internal swing
+      - Returns: entry on first return into the FVG within SB_RET_MAX_BARS bars
+      - Entries-only time gate: only post entries if the *entry bar* is within WINDOW_START..WINDOW_END
+    """
+    def __init__(self, levels: dict):
+        self.levels = levels or {}
+        # rolling bars
+        self._A = None   # bar i-2
+        self._B = None   # bar i-1
+        self._i = 0
+        # last FVGs
+        self._last_bull = None
+        self._last_bear = None
+        # pre-10 swings
+        self._pre_hi = None
+        self._pre_lo = None
+        # post hook
+        try:
+            from sbwatch import notify
+        except Exception:
+            # fallback if used outside package
+            class _N: 
+                @staticmethod
+                def post_entry(**kw): 
+                    print("[ENTRY]", kw)
+            notify = _N()
+        self._notify = notify
 
-        # Accept both flat and nested ("levels") shapes
-        raw_levels: Dict[str, float] = {}
-        if isinstance(levels, dict):
-            # flat keys
-            for k, v in levels.items():
-                if k in LEVEL_KEYS and v is not None:
-                    raw_levels[k] = v
-            # nested under "levels"
-            L = levels.get("levels") if isinstance(levels.get("levels"), dict) else None
-            if isinstance(L, dict):
-                for k, v in L.items():
-                    if k in LEVEL_KEYS and v is not None:
-                        raw_levels[k] = v
+    # --------- helpers ---------
 
-        self.levels = {k: float(v) for k, v in raw_levels.items()}
+    def _update_pre10(self, ts_ms:int, h:float, l:float):
+        if not INTERNAL_SWEEP_PRE10: 
+            return
+        t = dt.datetime.fromtimestamp(ts_ms/1000, tz=ET)
+        if t.hour < 10:
+            self._pre_hi = h if self._pre_hi is None or h > self._pre_hi else self._pre_hi
+            self._pre_lo = l if self._pre_lo is None or l < self._pre_lo else self._pre_lo
 
-        self.bars: List[Bar] = []
-        self.body_hist: List[float] = []
-        self.swings = SwingState()
-        self.pending: Optional[PendingSB] = None
+    def _swept_high(self, h:float) -> bool:
+        L = self.levels
+        return ((L.get("pdh") and h > L["pdh"]) or
+                (L.get("asia_high") and h > L["asia_high"]) or
+                (L.get("london_high") and h > L["london_high"]) or
+                (INTERNAL_SWEEP_PRE10 and self._pre_hi is not None and h > self._pre_hi))
 
-# -------- helpers --------
+    def _swept_low(self, l:float) -> bool:
+        L = self.levels
+        return ((L.get("pdl") and l < L["pdl"]) or
+                (L.get("asia_low") and l < L["asia_low"]) or
+                (L.get("london_low") and l < L["london_low"]) or
+                (INTERNAL_SWEEP_PRE10 and self._pre_lo is not None and l < self._pre_lo))
 
-    def _et_in_window(self, ts_ms: int) -> bool:
-        if not ENFORCE_WINDOW:
-            return True
-        t = datetime.fromtimestamp(ts_ms/1000, tz=ET)
-        s_h,s_m = map(int, WINDOW_START_HHMM.split(":"))
-        e_h,e_m = map(int, WINDOW_END_HHMM.split(":"))
-        start = t.replace(hour=s_h, minute=s_m, second=0, microsecond=0)
-        end   = t.replace(hour=e_h, minute=e_m, second=0, microsecond=0)
-        return start <= t <= end
+    def _displacement(self, o:float, h:float, l:float, c:float) -> float:
+        rng = max(1e-9, h - l)
+        body = abs(c - o)
+        return body / rng
 
-    def _median_body(self) -> float:
-        xs = self.body_hist[-FVG_LOOKBACK_BARS:] or [0.25]
-        xs = sorted(xs)
-        n = len(xs)
-        return xs[n//2] if n % 2 else 0.5*(xs[n//2-1]+xs[n//2])
+    def _maybe_post(self, ts_ms:int, side:str, price:float, **extra):
+        # entries-only gate
+        if not _in_entry_window(ts_ms):
+            return
+        # unify payload with existing webhook usage
+        payload = dict(when=ts_ms, side=side.upper(), price=price)
+        payload.update(extra)
+        try:
+            self._notify.post_entry(**payload)
+        except TypeError:
+            # older signature: notify.post_entry(ts_ms, price, side=...)
+            self._notify.post_entry(ts_ms, price, side=side.upper(), **extra)
 
-    def _update_swings(self, i: int):
-        # very light swings: previous 3 bars
-        if i < 2: return
-        b1, b2, b3 = self.bars[i-2], self.bars[i-1], self.bars[i]
-        # swing high at b2 if b2.h > b1.h and b2.h > b3.h
-        if b2.h > b1.h and b2.h > b3.h: self.swings.last_high = b2.h
-        # swing low at b2 if b2.l < b1.l and b2.l < b3.l
-        if b2.l < b1.l and b2.l < b3.l: self.swings.last_low = b2.l
+    # --------- main loop ---------
 
-    def _nearest_opposite_liquidity(self, side: str, ref: float) -> float:
-        keys = ["london_high","asia_high","pdh"] if side=="long" else ["london_low","asia_low","pdl"]
-        cands = [self.levels[k] for k in keys if k in self.levels]
-        if not cands: return ref
-        # pick nearest beyond current ref in the trade direction
-        if side=="long":
-            bigger = [x for x in cands if x >= ref]
-            return min(bigger) if bigger else max(cands)
+    def on_bar(self, ts_ms:int, o:float, h:float, l:float, c:float):
+        """Feed one 1m bar; emits entry via notify when gates align."""
+        self._i += 1
+
+        # maintain pre-10 swings for sweep logic
+        self._update_pre10(ts_ms, h, l)
+
+        # roll bars
+        A = self._A
+        B = self._B
+        C = dict(ts=ts_ms, o=o, h=h, l=l, c=c)
+
+        # compute displacement on B (3C) or C (2C)
+        disp_ref = None
+        if FVG_MODE == "3C" and B:
+            disp_ref = self._displacement(B["o"], B["h"], B["l"], B["c"])
         else:
-            smaller = [x for x in cands if x <= ref]
-            return max(smaller) if smaller else min(cands)
+            disp_ref = self._displacement(C["o"], C["h"], C["l"], C["c"])
 
-    # ---------- SB logic ----------
-    def _swept_key_level(self, i: int) -> Optional[str]:
-        """Return which key level was swept on bar i (low under a low-level for longs, or high over a high-level for shorts)."""
-        b = self.bars[i]
-        for name in LEVEL_KEYS:
-            v = self.levels.get(name)
-            if v is None: continue
-            if name.endswith("low") or name=="pdl":
-                if b.l < v and b.c > b.o:  # run below + close up
-                    return f"long@{name}"
-            if name.endswith("high") or name=="pdh":
-                if b.h > v and b.c < b.o:  # run above + close down
-                    return f"short@{name}"
-        return None
+        disp_ok = disp_ref >= SB_DISPLACEMENT_MIN
 
-    def _is_displacement(self, i: int, side: str) -> bool:
-        """Body greater than median of lookback and breaks minor swing in direction."""
-        if i == 0: return False
-        b = self.bars[i]
-        body = abs(b.c - b.o)
-        med  = max(self._median_body(), 1e-6)
-        takes_swing = (b.h > self.swings.last_high) if side=="long" else (b.l < self.swings.last_low)
-        directional = (b.c > b.o) if side=="long" else (b.c < b.o)
-        return directional and takes_swing and (body > DISPLACEMENT_BODY_MULT * med)
+        # build (or refresh) FVGs when displacement is OK
+        if disp_ok:
+            if FVG_MODE == "3C" and A:
+                # bullish FVG: C.low > A.high (+gap size ≥ SB_FVG_MIN)
+                if (C["l"] - A["h"]) >= SB_FVG_MIN:
+                    self._last_bull = dict(i=self._i, gap_top=C["l"], gap_bot=A["h"], disp=disp_ref)
+                # bearish FVG: A.low > C.high
+                if (A["l"] - C["h"]) >= SB_FVG_MIN:
+                    self._last_bear = dict(i=self._i, gap_top=A["l"], gap_bot=C["h"], disp=disp_ref)
+            elif FVG_MODE != "3C" and B:
+                # 2C variant
+                if (C["l"] - B["h"]) >= SB_FVG_MIN:
+                    self._last_bull = dict(i=self._i, gap_top=C["l"], gap_bot=B["h"], disp=disp_ref)
+                if (B["l"] - C["h"]) >= SB_FVG_MIN:
+                    self._last_bear = dict(i=self._i, gap_top=B["l"], gap_bot=C["h"], disp=disp_ref)
 
-    def _compute_fvg(self, i: int, side: str) -> Optional[Tuple[float,float]]:
-        """3-candle FVG around displacement bar i (body candle)."""
-        if i < 1: return None
-        a = self.bars[i-1]; b = self.bars[i]
-        # Seed swings from prior bars if not initialized yet
-        import math
-        if math.isnan(self.swings.last_high) or math.isnan(self.swings.last_low):
-            if i >= 1:
-                self.swings.last_high = max(x.h for x in self.bars[:i])
-                self.swings.last_low  = min(x.l for x in self.bars[:i])
-        
-        # use classic 2-candle gap (simple and fast for live). For bullish: a.h < b.l -> gap [a.h, b.l]
-        if side=="long" and a.h < b.l:
-            return (b.l, a.h) if b.l > a.h else None
-        if side=="short" and a.l > b.h:
-            return (a.l, b.h) if a.l > b.h else None
-        return None
+        # sweep checks (on current bar)
+        swept_hi = self._swept_high(C["h"])
+        swept_lo = self._swept_low(C["l"])
 
-    def _consider_entry_touch(self, i: int):
-        """If we have a pending SB, check if current bar trades into the gap in the right direction."""
-        if not self.pending: return
-        p = self.pending; b = self.bars[i]
-        # invalidate if taking too long
-        if i - p.disp_bar_i > MAX_BARS_TO_TAG_FVG:
-            self.pending = None
-            return
-        if p.side=="long":
-            # price trades down into the gap and closes up
-            if b.l <= p.fvg_top and b.c >= p.fvg_top:
-                self._emit_entry("long", i, p)
-                self.pending = None
-        else:
-            if b.h >= p.fvg_bot and b.c <= p.fvg_bot:
-                self._emit_entry("short", i, p)
-                self.pending = None
+        # returns into last FVG within window of bars
+        if self._last_bull:
+            last = self._last_bull
+            if (self._i - last["i"]) <= SB_RET_MAX_BARS and C["l"] <= last["gap_top"] and swept_lo:
+                # LONG entry at gap top (or current close; using gap top keeps parity with probe print)
+                self._maybe_post(C["ts"], "LONG", last["gap_top"], disp=last["disp"], mode=FVG_MODE)
+                self._last_bull = None
 
-    def _emit_entry(self, side: str, i: int, p: PendingSB):
+        if self._last_bear:
+            last = self._last_bear
+            if (self._i - last["i"]) <= SB_RET_MAX_BARS and C["h"] >= last["gap_bot"] and swept_hi:
+                self._maybe_post(C["ts"], "SHORT", last["gap_bot"], disp=last["disp"], mode=FVG_MODE)
+                self._last_bear = None
 
-        b = self.bars[i]
-
-        when_ms = b.ts_ms
-
-        # You can set a real label from your sweep detector; fallback keeps message sane
-
-        sweep_label = p.sweep_label if hasattr(p, 'sweep_label') and p.sweep_label else ("ASIA LOW" if side=="long" else "ASIA HIGH")
-
-        notify.post_entry(side=side, entry=b.c, sl=p.sl, tp=p.target_hint, sweep_label=sweep_label, when=when_ms)
-    def on_bar(self, ts_ms: int, o: float, h: float, l: float, c: float):
-        # window gate (optional)
-        if not self._et_in_window(ts_ms):
-            return
-
-        self.bars.append(Bar(ts_ms, o, h, l, c))
-        self.body_hist.append(abs(c - o))
-        i = len(self.bars) - 1
-
-        # if we have a pending FVG, check touch/re-entry first
-        self._consider_entry_touch(i)
-
-        # 1) look for a fresh sweep on this bar
-        sweep = self._swept_key_level(i)
-        if not sweep:
-            return
-        side = "long" if sweep.startswith("long@") else "short"
-
-        # ensure we have a prior swing before displacement check
-        if i >= 2:
-            self._update_swings(i-1)
-
-        # 2) look for displacement candle (this bar qualifies *or* wait for next bar)
-        # Seed swings from prior bars if not initialized (prevents NaN -> takes_swing=False)
-        import math
-        if math.isnan(self.swings.last_high) or math.isnan(self.swings.last_low):
-            if i >= 1:
-                self.swings.last_high = max(x.h for x in self.bars[:i])
-                self.swings.last_low  = min(x.l for x in self.bars[:i])
-        if not self._is_displacement(i, side):
-            return
-
-        # 3) compute FVG from displacement bar
-        fvg = self._compute_fvg(i, side)
-        if not fvg:
-            return
-
-        # keep swings fresh for current bar after using previous swing
-        self._update_swings(i)
-
-        # keep swings fresh (moved here)
-        self._update_swings(i)
-
-        # keep swings fresh (moved here)
-        self._update_swings(i)
-
-        fvg_top, fvg_bot = (max(fvg), min(fvg))
-        # SL: below/above recent swing
-        sl = (self.swings.last_low if side=="long" else self.swings.last_high)
-        if math.isnan(sl):  # fallback
-            sl = l if side=="long" else h
-
-        target_hint = self._nearest_opposite_liquidity(side, c)
-
-        # stage a pending entry waiting for return to FVG
-        self.pending = PendingSB(
-            side=side, disp_bar_i=i, fvg_top=fvg_top, fvg_bot=fvg_bot,
-            sl=sl, target_hint=target_hint, created_ms=self.bars[i].ts_ms
-        )
+        # advance rolling window
+        self._A = B
+        self._B = C
