@@ -36,11 +36,11 @@ def main():
         print("ERROR: DATABENTO_API_KEY not set", file=sys.stderr)
         sys.exit(2)
 
-    client = DBHistorical(api_key=api_key)
+    client = DBHistorical()
     data = client.timeseries.get_range(
         dataset="GLBX.MDP3",
         symbols=[sym],
-        stype_in="continuous",
+        stype_in='native',
         schema="ohlcv-1m",
         start=start.astimezone(dt.timezone.utc).isoformat(),
         end=end.astimezone(dt.timezone.utc).isoformat(),
