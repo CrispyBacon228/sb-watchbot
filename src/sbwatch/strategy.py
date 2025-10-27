@@ -109,10 +109,26 @@ class SBEngine:
         payload = dict(when=ts_ms, side=side.upper(), price=price)
         payload.update(extra)
         try:
+            payload = {
+                'side': side.upper(),
+                'entry': float(price),
+                'sl': float(extra.get('sl', 0.0)) if isinstance(extra.get('sl', 0), (int, float, str)) else 0.0,
+                'tp': (float(extra['tp']) if isinstance(extra.get('tp'), (int, float, str)) else None),
+                'sweep_label': str(extra.get('disp') or extra.get('label') or extra.get('mode') or 'SB'),
+                'when': ts_ms,
+            }
             self._notify.post_entry(**payload)
         except TypeError:
             # older signature: notify.post_entry(ts=ts_ms, price=price, side=...)
-            self._notify.post_entry(ts=ts_ms, price=price, side=side.upper(), **extra)
+            payload = {
+                'side': side.upper(),
+                'entry': float(price),
+                'sl': float(extra.get('sl', 0.0)) if isinstance(extra.get('sl', 0), (int, float, str)) else 0.0,
+                'tp': (float(extra['tp']) if isinstance(extra.get('tp'), (int, float, str)) else None),
+                'sweep_label': str(extra.get('disp') or extra.get('label') or extra.get('mode') or 'SB'),
+                'when': ts_ms,
+            }
+            self._notify.post_entry(**payload)
 
     # --------- main loop ---------
 
