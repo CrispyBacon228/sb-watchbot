@@ -111,8 +111,8 @@ class SBEngine:
         try:
             self._notify.post_entry(**payload)
         except TypeError:
-            # older signature: notify.post_entry(ts_ms, price, side=...)
-            self._notify.post_entry(ts_ms, price, side=side.upper(), **extra)
+            # older signature: notify.post_entry(ts=ts_ms, price=price, side=...)
+            self._notify.post_entry(ts=ts_ms, price=price, side=side.upper(), **extra)
 
     # --------- main loop ---------
 
