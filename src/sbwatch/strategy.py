@@ -1,6 +1,8 @@
 from __future__ import annotations
 import os, datetime as dt
 from zoneinfo import ZoneInfo
+SB_TP_RR = float(os.environ.get("SB_TP_RR", "1.0"))
+SB_SL_BUFFER = float(os.environ.get("SB_SL_BUFFER", "0.0"))
 
 # Public API expected by the rest of your app:
 # - class SBEngine(levels: dict)
@@ -178,13 +180,19 @@ class SBEngine:
             last = self._last_bull
             if (self._i - last["i"]) <= SB_RET_MAX_BARS and C["l"] <= last["gap_top"] and swept_lo:
                 # LONG entry at gap top (or current close; using gap top keeps parity with probe print)
-                self._maybe_post(C["ts"], "LONG", last["gap_top"], disp=last["disp"], mode=FVG_MODE)
+                entry = last["gap_top"]
+                sl    = (last["gap_bot"] - SB_SL_BUFFER)
+                tp    = entry + (entry - sl) * SB_TP_RR
+                self._maybe_post(C["ts"], "LONG", entry, sl=sl, tp=tp, disp=last["disp"], mode=FVG_MODE)
                 self._last_bull = None
 
         if self._last_bear:
             last = self._last_bear
             if (self._i - last["i"]) <= SB_RET_MAX_BARS and C["h"] >= last["gap_bot"] and swept_hi:
-                self._maybe_post(C["ts"], "SHORT", last["gap_bot"], disp=last["disp"], mode=FVG_MODE)
+                entry = last["gap_bot"]
+                sl    = (last["gap_top"] + SB_SL_BUFFER)
+                tp    = entry - (sl - entry) * SB_TP_RR
+                self._maybe_post(C["ts"], "SHORT", entry, sl=sl, tp=tp, disp=last["disp"], mode=FVG_MODE)
                 self._last_bear = None
 
         # advance rolling window
