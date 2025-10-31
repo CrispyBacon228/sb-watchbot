@@ -7,6 +7,60 @@ CSV_START="${CSV_START:-09:55}" \
 CSV_END="${CSV_END:-11:05}" \
 SB_SYMBOL="NQZ5"
 python -u src/sbwatch/tools/pull_csv.py
+# === SCALE NQZ5 OHLC TO LIVE UNITS (auto) === 
+if [[ "${SB_SYMBOL:-$SYMBOL}" == "NQZ5" ]]; then 
+    CSV_PATH="$(ls -t data/csv/*NQZ5*_1m.csv 2>/dev/null | head -1)"
+    if [[ -n "$CSV_PATH" ]]; then 
+        echo "[SCALE] Scaling $CSV_PATH OHLC by 1e9 divisor to match live feed..." ; 
+        python3 - << "EOF" 
+import csv, os, tempfile, shutil; 
+p = ""; tmp = p + ".tmp"; div = 1e9; 
+with open(p) as f, open(tmp,"w",newline="") as g: 
+    r = csv.reader(f); w = csv.writer(g); 
+    for i,row in enumerate(r): 
+        if i == 0: w.writerow(row); continue; 
+        try: 
+            row[1] = str(float(row[1])/div); 
+            row[2] = str(float(row[2])/div); 
+            row[3] = str(float(row[3])/div); 
+            row[4] = str(float(row[4])/div); 
+        except: pass; 
+        w.writerow(row); 
+shutil.move(tmp, p); 
+print("[SCALE DONE]", p) 
+EOF 
+    else 
+        echo "[SCALE] No NQZ5 CSV found yet, skipping."; 
+    fi 
+fi 
+# === END SCALE ===
+# === SCALE NQZ5 OHLC TO LIVE UNITS (auto) === 
+if [[ "${SB_SYMBOL:-$SYMBOL}" == "NQZ5" ]]; then 
+    CSV_PATH="$(ls -t data/csv/*NQZ5*_1m.csv 2>/dev/null | head -1)"
+    if [[ -n "$CSV_PATH" ]]; then 
+        echo "[SCALE] Scaling $CSV_PATH OHLC by 1e9 divisor to match live feed..." ; 
+        python3 - << "EOF" 
+import csv, os, tempfile, shutil; 
+p = ""; tmp = p + ".tmp"; div = 1e9; 
+with open(p) as f, open(tmp,"w",newline="") as g: 
+    r = csv.reader(f); w = csv.writer(g); 
+    for i,row in enumerate(r): 
+        if i == 0: w.writerow(row); continue; 
+        try: 
+            row[1] = str(float(row[1])/div); 
+            row[2] = str(float(row[2])/div); 
+            row[3] = str(float(row[3])/div); 
+            row[4] = str(float(row[4])/div); 
+        except: pass; 
+        w.writerow(row); 
+shutil.move(tmp, p); 
+print("[SCALE DONE]", p) 
+EOF 
+    else 
+        echo "[SCALE] No NQZ5 CSV found yet, skipping."; 
+    fi 
+fi 
+# === END SCALE ===
 
 # --- SCALE_NQZ5_DIVISOR (auto-added) ---
 # After pulling, scale the latest NQZ5 1m CSV's O/H/L/C by PRICE_DIVISOR so it matches live units.
