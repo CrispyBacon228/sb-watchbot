@@ -2,7 +2,7 @@ from __future__ import annotations
 import os, datetime as dt
 from zoneinfo import ZoneInfo
 SB_TP_RR = float(os.environ.get("SB_TP_RR", "1.0"))
-SB_SL_BUFFER = 5.0
+SB_SL_BUFFER = float(os.environ.get("SB_SL_BUFFER", "0.0"))
 
 # Public API expected by the rest of your app:
 # - class SBEngine(levels: dict)
@@ -160,32 +160,16 @@ class SBEngine:
             if FVG_MODE == "3C" and A:
                 # bullish FVG: C.low > A.high (+gap size ≥ SB_FVG_MIN)
                 if (C["l"] - A["h"]) >= SB_FVG_MIN:
-                    # 3C: A is C1
-                    self._last_bull = dict(
-                        i=self._i, gap_top=C["l"], gap_bot=A["h"], disp=disp_ref,
-                        c1_low=A["l"], c1_high=A["h"]
-                    )
+                    self._last_bull = dict(i=self._i, gap_top=C["l"], gap_bot=A["h"], disp=disp_ref)
                 # bearish FVG: A.low > C.high
                 if (A["l"] - C["h"]) >= SB_FVG_MIN:
-                    # 3C: A is C1
-                    self._last_bear = dict(
-                        i=self._i, gap_top=A["l"], gap_bot=C["h"], disp=disp_ref,
-                        c1_low=A["l"], c1_high=A["h"]
-                    )
+                    self._last_bear = dict(i=self._i, gap_top=A["l"], gap_bot=C["h"], disp=disp_ref)
             elif FVG_MODE != "3C" and B:
                 # 2C variant
                 if (C["l"] - B["h"]) >= SB_FVG_MIN:
-                    # 2C: B is C1
-                    self._last_bull = dict(
-                        i=self._i, gap_top=C["l"], gap_bot=B["h"], disp=disp_ref,
-                        c1_low=B["l"], c1_high=B["h"]
-                    )
+                    self._last_bull = dict(i=self._i, gap_top=C["l"], gap_bot=B["h"], disp=disp_ref)
                 if (B["l"] - C["h"]) >= SB_FVG_MIN:
-                    # 2C: B is C1
-                    self._last_bear = dict(
-                        i=self._i, gap_top=B["l"], gap_bot=C["h"], disp=disp_ref,
-                        c1_low=B["l"], c1_high=B["h"]
-                    )
+                    self._last_bear = dict(i=self._i, gap_top=B["l"], gap_bot=C["h"], disp=disp_ref)
 
         # sweep checks (on current bar)
         swept_hi = self._swept_high(C["h"])
@@ -197,7 +181,7 @@ class SBEngine:
             if (self._i - last["i"]) <= SB_RET_MAX_BARS and C["l"] <= last["gap_top"] and swept_lo:
                 # LONG entry at gap top (or current close; using gap top keeps parity with probe print)
                 entry = last["gap_top"]
-                sl    = (last.get("c1_low", last["gap_bot"]) - SB_SL_BUFFER)
+                sl    = (last["gap_bot"] - SB_SL_BUFFER)
                 tp    = entry + (entry - sl) * SB_TP_RR
                 self._maybe_post(C["ts"], "LONG", entry, sl=sl, tp=tp, disp=last["disp"], mode=FVG_MODE)
                 self._last_bull = None
@@ -206,7 +190,7 @@ class SBEngine:
             last = self._last_bear
             if (self._i - last["i"]) <= SB_RET_MAX_BARS and C["h"] >= last["gap_bot"] and swept_hi:
                 entry = last["gap_bot"]
-                sl    = (last.get("c1_high", last["gap_top"]) + SB_SL_BUFFER)
+                sl    = (last["gap_top"] + SB_SL_BUFFER)
                 tp    = entry - (sl - entry) * SB_TP_RR
                 self._maybe_post(C["ts"], "SHORT", entry, sl=sl, tp=tp, disp=last["disp"], mode=FVG_MODE)
                 self._last_bear = None
@@ -214,3 +198,44 @@ class SBEngine:
         # advance rolling window
         self._A = B
         self._B = C
+
+
+# =========================
+# C1-only SL override (last def wins)
+# LONG  -> c1_low  (-ticks * tick_size for preview)
+# SHORT -> c1_high (+ticks * tick_size for preview)
+
+def _sb_c1_stop(side, last, tick_size=0.25, ticks=0):
+    # Grab Candle-1 extremes directly
+    c1_low  = last.get("c1_low")
+    c1_high = last.get("c1_high")
+
+    # LONG -> stop below C1 low
+    # SHORT -> stop above C1 high
+    base = c1_low if str(side).upper().startswith("L") else c1_high
+
+    if base is None:
+        return None
+
+    # Tick modifier not needed — pure ICT Candle-1 logic
+    return float(base)
+
+# =======================
+# C1-only Stop (no gap)
+# =======================
+def _sb_c1_stop(side, last, tick_size=0.25, ticks=0):
+    """Silver Bullet SL: Candle-1 extreme only (no gap fallback).
+    LONG  -> C1 low
+    SHORT -> C1 high
+    Returns float(base) or None if Candle-1 extreme not available.
+    """
+    try:
+        side_u = str(side).upper()
+        c1_lo  = last.get('c1_low')
+        c1_hi  = last.get('c1_high')
+        base = c1_lo if side_u.startswith('L') else c1_hi
+        if base is None:
+            return None
+        return float(base)
+    except Exception:
+        return None

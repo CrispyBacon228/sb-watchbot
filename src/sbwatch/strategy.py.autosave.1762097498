@@ -2,7 +2,6 @@ from __future__ import annotations
 import os, datetime as dt
 from zoneinfo import ZoneInfo
 SB_TP_RR = float(os.environ.get("SB_TP_RR", "1.0"))
-SB_SL_BUFFER = 5.0
 
 # Public API expected by the rest of your app:
 # - class SBEngine(levels: dict)
@@ -27,7 +26,11 @@ def _t(str_hm: str|None, default: dt.time) -> dt.time:
     return dt.time.fromisoformat(str_hm)
 
 FVG_MODE             = os.environ.get("FVG_MODE", "3C").upper()            # "3C" (default) or "2C"
-SB_FVG_MIN           = _f("SB_FVG_MIN", "0.15")                            # gap size in points
+
+SB_FVG_MIN           = 
+# --- Dynamic SL tick buffer ---
+# --------------------------------
+_f("SB_FVG_MIN", "0.15")                            # gap size in points
 SB_DISPLACEMENT_MIN  = _f("SB_DISPLACEMENT_MIN", "0.30")                   # body/range threshold
 SB_RET_MAX_BARS      = _i("SB_RET_MAX_BARS", "20")                         # return must occur within N bars
 INTERNAL_SWEEP_PRE10 = _b("INTERNAL_SWEEP_PRE10", "1")                     # default ON to match probes
@@ -65,6 +68,14 @@ class SBEngine:
         # post hook
         try:
             from sbwatch import notify
+
+# --- Dynamic SL tick buffer (env-configurable) ---
+SB_TICK_SIZE = 0.25  # NQ tick size
+SB_SL_TICKS = float(os.environ.get('SB_SL_TICKS', '0'))  # ticks beyond C1 extreme
+SB_SL_BUFFER = SB_SL_TICKS * SB_TICK_SIZE
+# ---------------------------------------------------
+
+
         except Exception:
             # fallback if used outside package
             class _N: 
