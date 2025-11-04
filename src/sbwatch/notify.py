@@ -121,6 +121,20 @@ def post_entry(side: str, entry: float, sl: float, tp: Optional[float], sweep_la
     t  = _fmt_et(when, seconds=True)
     es = _fmt_price(entry); sls=_fmt_price(sl); tps=_fmt_price(tp) if tp is not None else "—"
     post_discord(f"🟩 SB-ENTRY ({t}) {side_txt} — sweep of {sweep_label} Entry {es} | SL {sls} | TP~{tps}")
+    # --- contract sizing info ---
+    try:
+        TICK_SIZE = 0.25
+        TICK_VALUE = 5.0          # NQ $/tick (use 0.50 for MNQ)
+        RISK_PER_TRADE = 1500.0
+        stop_ticks = abs(float(entry) - float(sl)) / TICK_SIZE
+        risk_per_contract = stop_ticks * TICK_VALUE
+        contracts = int(RISK_PER_TRADE // risk_per_contract) if risk_per_contract > 0 else 1
+        if contracts < 1: contracts = 1
+        post_discord(f"⚙️ Risk model ➜ {stop_ticks:.1f} ticks | ${risk_per_contract:.2f}/ct | {contracts} contracts")
+    except Exception as e:
+        post_discord(f"[contract calc error: {e}]")
+    # --- end contract sizing ---
+
     mark_entry_flag(when)
 
 def post_tp_hit(price: float, when: Optional[Union[int,float,str,datetime]]=None,
