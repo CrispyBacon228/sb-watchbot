@@ -1,11 +1,41 @@
 from __future__ import annotations
 
+# === FAST CSV SOURCE START ===
+from types import SimpleNamespace as _NS
+import os
+from sbwatch.stream.minute_proxy import iter_minute_csv_tail, iter_minute_csv_tail_fast
+
+def get_bars():
+    path = os.getenv("LIVE_MINUTE_PATH","data/live_minute.csv")
+    return (iter_minute_csv_tail_fast(path)
+            if os.getenv("FAST_UPDATES","1") == "1"
+            else iter_minute_csv_tail(path))
+
+def bars_compat():
+    for _b in get_bars():
+        # map Bar(o,h,l,c,v) -> bar.open/.high/.low/.close/.volume
+        yield _NS(ts_ms=_b.ts_ms, open=_b.o, high=_b.h, low=_b.l, close=_b.c, volume=getattr(_b, 'v', 0.0))
+# === FAST CSV SOURCE END ===
+
+
+
+
+
 from sbwatch.stream.minute_proxy import iter_minute_csv_tail, iter_minute_csv_tail_fast
 import os
+print(f"[DEBUG] FAST_UPDATES={os.getenv('FAST_UPDATES')}")
 #!/usr/bin/env python3
 
 # keep src/ on sys.path so imports work under systemd
 from pathlib import Path
+
+# --- CSV bar source selector (FAST = intra-minute updates) ---
+def get_bars():
+    path = os.getenv('LIVE_MINUTE_PATH','data/live_minute.csv')
+    if os.getenv('FAST_UPDATES','1') == '1':
+        return iter_minute_csv_tail_fast(path)
+    return iter_minute_csv_tail(path)
+
 import sys
 BASE_DIR = Path(__file__).resolve().parent
 SRC = BASE_DIR / "src"
@@ -40,7 +70,8 @@ def main() -> None:
     eng = SBEngine(levels)
 
     armed_sent = False
-    for bar in iter_live_bars(run_seconds=None):
+    for bar in bars_compat():
+        print(f"[FAST] {bar.ts_ms} {bar.close}", flush=True)
         # normalize ts to ms
         ts_ms = getattr(bar, "ts_epoch_ms", None)
         if ts_ms is None:
@@ -68,3 +99,19 @@ if __name__ == "__main__":
         main()
     except KeyboardInterrupt:
         pass
+# --- FAST selector fallback (added) ---
+def _bars_source():
+    path = os.getenv("LIVE_MINUTE_PATH","data/live_minute.csv")
+    return (iter_minute_csv_tail_fast(path)
+            if os.getenv("FAST_UPDATES","1")=="1"
+            else iter_minute_csv_tail(path))
+try:
+    bars  # type: ignore
+except NameError:
+    bars = _bars_source()
+
+# --- Map minute_proxy Bar(o,h,l,c,v) -> strategy-style bar(open,high,low,close,volume) ---
+from types import SimpleNamespace as _NS
+def bars_compat():
+    for _b in get_bars():
+        yield _NS(ts_ms=_b.ts_ms, open=_b.o, high=_b.h, low=_b.l, close=_b.c, volume=getattr(_b, 'v', 0.0))
