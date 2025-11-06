@@ -1,8 +1,7 @@
-from __future__ import annotations
-
 from sbwatch.stream.minute_proxy import iter_minute_csv_tail, iter_minute_csv_tail_fast
 import os
 #!/usr/bin/env python3
+from __future__ import annotations
 
 # keep src/ on sys.path so imports work under systemd
 from pathlib import Path
