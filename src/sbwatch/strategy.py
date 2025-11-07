@@ -134,83 +134,47 @@ class SBEngine:
 
     # --------- main loop ---------
 
+    
     def on_bar(self, ts_ms:int, o:float, h:float, l:float, c:float):
-        """Feed one 1m bar; emits entry via notify when gates align."""
+        """
+        UPDATED — supports intraminute 1s updates.
+
+        If bars arrive within the SAME minute:
+            ✓ update OHLC (no _i increment)
+        When a NEW minute arrives:
+            ✓ increment _i
+            ✓ roll A/B/C normally
+        """
+
+        minute_bucket = ts_ms // 60000
+
+        # first bar ever
+        if not hasattr(self, "_current_minute_bucket"):
+            self._current_minute_bucket = minute_bucket
+            self._A = None
+            self._B = None
+            self._C = dict(ts=ts_ms, o=o, h=h, l=l, c=c)
+            self._i = 1
+            return
+
+        # intraminute update
+        if minute_bucket == self._current_minute_bucket:
+            C = self._C
+            C["h"] = max(C["h"], h)
+            C["l"] = min(C["l"], l)
+            C["c"] = c
+            return
+
+        # new minute
+        self._current_minute_bucket = minute_bucket
         self._i += 1
 
-        # maintain pre-10 swings for sweep logic
-        self._update_pre10(ts_ms, h, l)
-
-        # roll bars
         A = self._A
         B = self._B
         C = dict(ts=ts_ms, o=o, h=h, l=l, c=c)
 
-        # compute displacement on B (3C) or C (2C)
-        disp_ref = None
-        if FVG_MODE == "3C" and B:
-            disp_ref = self._displacement(B["o"], B["h"], B["l"], B["c"])
-        else:
-            disp_ref = self._displacement(C["o"], C["h"], C["l"], C["c"])
-
-        disp_ok = disp_ref >= SB_DISPLACEMENT_MIN
-
-        # build (or refresh) FVGs when displacement is OK
-        if disp_ok:
-            if FVG_MODE == "3C" and A:
-                # bullish FVG: C.low > A.high (+gap size ≥ SB_FVG_MIN)
-                if (C["l"] - A["h"]) >= SB_FVG_MIN:
-                    # 3C: A is C1
-                    self._last_bull = dict(
-                        i=self._i, gap_top=C["l"], gap_bot=A["h"], disp=disp_ref,
-                        c1_low=A["l"], c1_high=A["h"]
-                    )
-                # bearish FVG: A.low > C.high
-                if (A["l"] - C["h"]) >= SB_FVG_MIN:
-                    # 3C: A is C1
-                    self._last_bear = dict(
-                        i=self._i, gap_top=A["l"], gap_bot=C["h"], disp=disp_ref,
-                        c1_low=A["l"], c1_high=A["h"]
-                    )
-            elif FVG_MODE != "3C" and B:
-                # 2C variant
-                if (C["l"] - B["h"]) >= SB_FVG_MIN:
-                    # 2C: B is C1
-                    self._last_bull = dict(
-                        i=self._i, gap_top=C["l"], gap_bot=B["h"], disp=disp_ref,
-                        c1_low=B["l"], c1_high=B["h"]
-                    )
-                if (B["l"] - C["h"]) >= SB_FVG_MIN:
-                    # 2C: B is C1
-                    self._last_bear = dict(
-                        i=self._i, gap_top=B["l"], gap_bot=C["h"], disp=disp_ref,
-                        c1_low=B["l"], c1_high=B["h"]
-                    )
-
-        # sweep checks (on current bar)
-        swept_hi = self._swept_high(C["h"])
-        swept_lo = self._swept_low(C["l"])
-
-        # returns into last FVG within window of bars
-        if self._last_bull:
-            last = self._last_bull
-            if (self._i - last["i"]) <= SB_RET_MAX_BARS and C["l"] <= last["gap_top"] and swept_lo:
-                # LONG entry at gap top (or current close; using gap top keeps parity with probe print)
-                entry = last["gap_top"]
-                sl    = (last.get("c1_low", last["gap_bot"]) - SB_SL_BUFFER)
-                tp    = entry + (entry - sl) * SB_TP_RR
-                self._maybe_post(C["ts"], "LONG", entry, sl=sl, tp=tp, disp=last["disp"], mode=FVG_MODE)
-                self._last_bull = None
-
-        if self._last_bear:
-            last = self._last_bear
-            if (self._i - last["i"]) <= SB_RET_MAX_BARS and C["h"] >= last["gap_bot"] and swept_hi:
-                entry = last["gap_bot"]
-                sl    = (last.get("c1_high", last["gap_top"]) + SB_SL_BUFFER)
-                tp    = entry - (sl - entry) * SB_TP_RR
-                self._maybe_post(C["ts"], "SHORT", entry, sl=sl, tp=tp, disp=last["disp"], mode=FVG_MODE)
-                self._last_bear = None
-
-        # advance rolling window
         self._A = B
+        self._B = C
+        self._C = C
+
         self._B = C

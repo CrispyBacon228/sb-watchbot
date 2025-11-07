@@ -1,0 +1,57 @@
+*** a/src/sbwatch/strategy.py
+--- b/src/sbwatch/strategy.py
+@@
+     def on_bar(self, ts_ms:int, o:float, h:float, l:float, c:float):
+-        """Feed one 1m bar; emits entry via notify when gates align."""
+-        self._i += 1
+-
+-        # maintain pre-10 swings for sweep logic
+-        self._update_pre10(ts_ms, h, l)
+-
+-        # roll bars
+-        A = self._A
+-        B = self._B
+-        C = dict(ts=ts_ms, o=o, h=h, l=l, c=c)
++        """
++        🚀 UPDATED BEHAVIOR (intraminute support):
++            - If a bar arrives within the SAME minute bucket,
++              we UPDATE the current minute's OHLC instead of advancing.
++
++            - If a bar arrives in a NEW minute bucket,
++              we advance the engine (roll A/B/C and evaluate signals).
++        """
++
++        minute_bucket = ts_ms // 60000
++
++        # initialize storage on first use
++        if not hasattr(self, "_current_minute_bucket"):
++            self._current_minute_bucket = None
++            self._A = None
++            self._B = None
++            self._C = None
++            self._i = 0
++
++        # ✅ first bar ever
++        if self._current_minute_bucket is None:
++            self._current_minute_bucket = minute_bucket
++            self._i += 1
++            self._C = dict(ts=(minute_bucket*60000), o=o, h=h, l=l, c=c)
++            return
++
++        # ✅ intraminute update — MODIFY CURRENT C ONLY
++        if minute_bucket == self._current_minute_bucket:
++            C = self._C
++            C["h"] = max(C["h"], h)
++            C["l"] = min(C["l"], l)
++            C["c"] = c
++            return
++
++        # ✅ NEW MINUTE — ADVANCE ENGINE
++        self._current_minute_bucket = minute_bucket
++        self._i += 1
++
++        A = self._A
++        B = self._B
++        C = dict(ts=(minute_bucket*60000), o=o, h=h, l=l, c=c)
+
+         # compute displacement on B (3C etc… original code continues unchanged)
