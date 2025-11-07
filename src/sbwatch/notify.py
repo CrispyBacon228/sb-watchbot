@@ -125,15 +125,12 @@ def post_entry(side: str, entry: float, sl: float, tp: Optional[float], sweep_la
     try:
         TICK_SIZE = 0.25
         TICK_VALUE = 5.0          # NQ $/tick (use 0.50 for MNQ)
-  RISK_PER_TRADE = 1500.0
-  stop_ticks = abs(float(entry) - float(sl)) / TICK_SIZE
-  risk_per_contract = stop_ticks * TICK_VALUE
-  # precise (decimal) contracts with NO rounding:
-  contracts_exact = (RISK_PER_TRADE / risk_per_contract) if risk_per_contract > 0 else 0.0
-  # legacy whole-number max (floor) if you need an int elsewhere:
-  contracts_max = int(contracts_exact) if contracts_exact > 0 else 0
-  if contracts_max < 1: contracts_max = 1
-  post_discord(f"⚙️ Risk model ➜ {stop_ticks:.1f} ticks | ${risk_per_contract:.2f}/ct | {contracts_exact:.3f} contracts (max whole={contracts_max})")
+        RISK_PER_TRADE = 1500.0
+        stop_ticks = abs(float(entry) - float(sl)) / TICK_SIZE
+        risk_per_contract = stop_ticks * TICK_VALUE
+        contracts = int(RISK_PER_TRADE // risk_per_contract) if risk_per_contract > 0 else 1
+        if contracts < 1: contracts = 1
+        post_discord(f"⚙️ Risk model ➜ {stop_ticks:.1f} ticks | ${risk_per_contract:.2f}/ct | {contracts} contracts")
     except Exception as e:
         post_discord(f"[contract calc error: {e}]")
     # --- end contract sizing ---
