@@ -1,0 +1,31 @@
+*** Begin Patch
+*** Update File: src/sbwatch/strategy.py
+@@
+-    # intraminute update
+-    if minute_bucket == self._current_minute_bucket:
+-        C = self._C
+-        C["h"] = max(C["h"], h)
+-        C["l"] = min(C["l"], l)
+-        C["c"] = c
+-        return
++    # intraminute update — update current C but continue evaluating the strategy
++    if minute_bucket == self._current_minute_bucket:
++        # update the existing intraminute bar (do NOT increment _i)
++        self._C["h"] = max(self._C["h"], h)
++        self._C["l"] = min(self._C["l"], l)
++        self._C["c"] = c
++        # keep using the rolling window A/B/C for detection (do not roll)
++        A = self._A
++        B = self._B
++        C = self._C
++    else:
++        # new minute: roll the window and increment the index
++        self._current_minute_bucket = minute_bucket
++        self._i += 1
++        A = self._A
++        B = self._B
++        C = dict(ts=ts_ms, o=o, h=h, l=l, c=c)
++        self._A = B
++        self._B = C
++        self._C = C
+*** End Patch

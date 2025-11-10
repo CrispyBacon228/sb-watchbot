@@ -159,26 +159,29 @@ class SBEngine:
 
         
         # intraminute update — update bar but continue evaluating (1-second alerts)
-        # intraminute update — update bar but continue evaluating (1-second alerts)
         if minute_bucket == self._current_minute_bucket:
-            # update current C bar — do not roll minute
             self._C["h"] = max(self._C["h"], h)
             self._C["l"] = min(self._C["l"], l)
             self._C["c"] = c
-            # continue evaluating using updated A/B/C
+
+            # use updated A/B/C (DO NOT return)
             A = self._A
             B = self._B
             C = self._C
+        # DEBUG: intraminute evaluation marker
+        print(f'INTRAMINUTE_EVAL ts={ts_ms} o={o} h={h} l={l} c={c}')
         else:
-            # new minute — roll A -> B -> C
+            # NEW minute — roll bars A → B → C
             self._current_minute_bucket = minute_bucket
             self._i += 1
+
             A = self._A
             B = self._B
             C = dict(ts=ts_ms, o=o, h=h, l=l, c=c)
             self._A = B
             self._B = C
             self._C = C
+    
 
         # new minute
         self._current_minute_bucket = minute_bucket
