@@ -1,195 +1,154 @@
 from __future__ import annotations
-import os, datetime as dt
+import os, json, datetime as dt
 from zoneinfo import ZoneInfo
-SB_TP_RR = float(os.environ.get("SB_TP_RR", "1.0"))
-SB_SL_BUFFER = 5.0
-
-# Public API expected by the rest of your app:
-# - class SBEngine(levels: dict)
-# - method on_bar(ts_ms:int, o:float, h:float, l:float, c:float)
-# - calls sbwatch.notify.post_entry(...) when an entry qualifies
 
 ET = ZoneInfo("America/New_York")
 
-def _f(v, d): 
-    try: return float(os.environ.get(v, d))
-    except: return float(d)
+SB_TP_RR = float(os.environ.get("SB_TP_RR", "2.0"))
+SB_SILVER_BULLET_BUFFER = 5.0
 
-def _i(v, d):
-    try: return int(os.environ.get(v, d))
-    except: return int(d)
+def _fv(v: str, d: float):
+    try:
+        return float(os.environ.get(v, d))
+    except:
+        return d
 
-def _b(v, d="0"):
-    return os.environ.get(v, d) in ("1","true","TRUE","yes","Yes")
+def _iv(v: str, d: int):
+    try:
+        return int(os.environ.get(v, d))
+    except:
+        return d
 
-def _t(str_hm: str|None, default: dt.time) -> dt.time:
-    if not str_hm: return default
-    return dt.time.fromisoformat(str_hm)
+# runtime env config
+FVG_MODE          = os.environ.get("FVG_MODE", "3C").upper()
+SB_FVG_MIN        = _fv("SB_FVG_MIN", 15.0)
+SB_DISPLACEMENT   = _fv("SB_DISPLACEMENT", 30.0)
+SB_RET_MAX_BARS   = _iv("SB_RET_MAX_BARS", 20)
+INTERNAL_SWEEP_PRIO = _iv("SB_INTERNAL_SWEEP_PRIO", 0)
+WINDOW_START      = dt.time(9,59,0)
+WINDOW_END        = dt.time(11,0,0)
 
-FVG_MODE             = os.environ.get("FVG_MODE", "3C").upper()            # "3C" (default) or "2C"
-SB_FVG_MIN           = _f("SB_FVG_MIN", "0.15")                            # gap size in points
-SB_DISPLACEMENT_MIN  = _f("SB_DISPLACEMENT_MIN", "0.30")                   # body/range threshold
-SB_RET_MAX_BARS      = _i("SB_RET_MAX_BARS", "20")                         # return must occur within N bars
-INTERNAL_SWEEP_PRE10 = _b("INTERNAL_SWEEP_PRE10", "1")                     # default ON to match probes
-WINDOW_START         = _t(os.environ.get("WINDOW_START", "10:00"), dt.time(0,0))
-WINDOW_END           = _t(os.environ.get("WINDOW_END",   "11:00"), dt.time(23,59,59))
+def _in_window(ts_ms:int) -> bool:
+    t = dt.datetime.fromtimestamp(ts_ms/1000, tz=ET)
+    return WINDOW_START <= t.time() <= WINDOW_END
 
-def _in_entry_window(ts_ms:int)->bool:
-    t = dt.datetime.fromtimestamp(ts_ms/1000, tz=ET).time()
-    return WINDOW_START <= t <= WINDOW_END
-
-def _iso(ts_ms:int)->str:
+def _iso(ts_ms:int) -> str:
     return dt.datetime.fromtimestamp(ts_ms/1000, tz=ET).strftime("%H:%M:%S")
 
 class SBEngine:
-    """
-    Probe-parity strategy engine:
-      - 3C FVG (default): displacement on bar B; bullish if C.low > A.high; bearish if A.low > C.high
-      - 2C FVG (optional via FVG_MODE=2C): displacement on current C; bullish if C.low > B.high; bearish if B.low > C.high
-      - Sweeps: PDH/PDL, Asia high/low, London high/low, plus optional pre-10 internal swing
-      - Returns: entry on first return into the FVG within SB_RET_MAX_BARS bars
-      - Entries-only time gate: only post entries if the *entry bar* is within WINDOW_START..WINDOW_END
-    """
-    def __init__(self, levels: dict):
+    #
+    # Silver Bullet strategy core
+    #
+    # We track THREE rolling bars:
+    #   A (most recent closed minute)
+    #   B (1 minute back)
+    #   C (2 minutes back) ← internal sweep checks use this
+    #
+    # NEW intraminute logic:
+    #   - A ALWAYS contains the "current minute" updated every tick
+    #   - C always initialized to dict at minute start (not None)
+    #   - No NoneType errors, immediate 1-second evals
+    #
+
+    def __init__(self, levels:dict):
         self.levels = levels or {}
-        # rolling bars
-        self._A = None   # bar i-2
-        self._B = None   # bar i-1
+
+        # Rolling minute structure (Option B)
+        self._current_minute_bucket = None
         self._i = 0
-        # last FVGs
-        self._last_bull = None
-        self._last_bear = None
-        # pre-10 swings
-        self._pre_hi = None
+
+        self._A = None
+        self._B = None
+        self._C = None
+
+        # sweep memory
         self._pre_lo = None
-        # post hook
-        try:
-            from sbwatch import notify
-        except Exception:
-            # fallback if used outside package
-            class _N: 
-                @staticmethod
-                def post_entry(**kw): 
-                    print("[ENTRY]", kw)
-            notify = _N()
-        self._notify = notify
+        self._pre_hi = None
 
-    # --------- helpers ---------
+        from sbwatch import notify   # Discord send
+        self._notify = notify.post_entry
 
-    def _update_pre10(self, ts_ms:int, h:float, l:float):
-        if not INTERNAL_SWEEP_PRE10: 
-            return
-        t = dt.datetime.fromtimestamp(ts_ms/1000, tz=ET)
-        if t.hour < 10:
-            self._pre_hi = h if self._pre_hi is None or h > self._pre_hi else self._pre_hi
-            self._pre_lo = l if self._pre_lo is None or l < self._pre_lo else self._pre_lo
+    # ------------ internal helpers ------------
 
-    def _swept_high(self, h:float) -> bool:
+    def _update_prelo_prehi(self, ts, h, l):
+        # optional pre-internal sweep
+        if INTERNAL_SWEEP_PRIO:
+            if self._pre_hi is None or h > self._pre_hi:
+                self._pre_hi = h
+            if self._pre_lo is None or l < self._pre_lo:
+                self._pre_lo = l
+
+    def _sweep_high(self, h):
         L = self.levels
-        return ((L.get("pdh") and h > L["pdh"]) or
-                (L.get("asia_high") and h > L["asia_high"]) or
-                (L.get("london_high") and h > L["london_high"]) or
-                (INTERNAL_SWEEP_PRE10 and self._pre_hi is not None and h > self._pre_hi))
+        return ((h > L.get("pdh")) or (h > L.get("asia_high")) or
+                (h > L.get("london_high")) or
+                (INTERNAL_SWEEP_PRIO and self._pre_hi is not None and h > self._pre_hi))
 
-    def _swept_low(self, l:float) -> bool:
+    def _sweep_low(self, l):
         L = self.levels
-        return ((L.get("pdl") and l < L["pdl"]) or
-                (L.get("asia_low") and l < L["asia_low"]) or
-                (L.get("london_low") and l < L["london_low"]) or
-                (INTERNAL_SWEEP_PRE10 and self._pre_lo is not None and l < self._pre_lo))
+        return ((l < L.get("pdl")) or (l < L.get("asia_low")) or
+                (l < L.get("london_low")) or
+                (INTERNAL_SWEEP_PRIO and self._pre_lo is not None and l < self._pre_lo))
 
     def _displacement(self, o:float, h:float, l:float, c:float) -> float:
-        rng = max(1e-9, h - l)
-        body = abs(c - o)
-        return body / rng
+        body = abs(c-o)
+        rng  = max(h, o) - min(l, o)
+        if rng == 0: return 0.0
+        return body / rng   # ratio 0.0 - 1.0
 
-    def _maybe_post(self, ts_ms:int, side:str, price:float, **extra):
-        # entries-only gate
-        if not _in_entry_window(ts_ms):
-            return
-        # unify payload with existing webhook usage
-        payload = dict(when=ts_ms, side=side.upper(), price=price)
-        payload.update(extra)
-        try:
-            payload = {
-                'side': side.upper(),
-                'entry': float(price),
-                'sl': float(extra.get('sl', 0.0)) if isinstance(extra.get('sl', 0), (int, float, str)) else 0.0,
-                'tp': (float(extra['tp']) if isinstance(extra.get('tp'), (int, float, str)) else None),
-                'sweep_label': str(extra.get('disp') or extra.get('label') or extra.get('mode') or 'SB'),
-                'when': ts_ms,
-            }
-            self._notify.post_entry(**payload)
-        except TypeError:
-            # older signature: notify.post_entry(ts=ts_ms, price=price, side=...)
-            payload = {
-                'side': side.upper(),
-                'entry': float(price),
-                'sl': float(extra.get('sl', 0.0)) if isinstance(extra.get('sl', 0), (int, float, str)) else 0.0,
-                'tp': (float(extra['tp']) if isinstance(extra.get('tp'), (int, float, str)) else None),
-                'sweep_label': str(extra.get('disp') or extra.get('label') or extra.get('mode') or 'SB'),
-                'when': ts_ms,
-            }
-            self._notify.post_entry(**payload)
-
-    # --------- main loop ---------
-
-    
+    # ---------------------------------------------------------
+    # ✅ MAIN ENTRY (called every tick live or every row replay)
+    # ---------------------------------------------------------
     def on_bar(self, ts_ms:int, o:float, h:float, l:float, c:float):
-        """
-        UPDATED — supports intraminute 1s updates.
+        bucket = ts_ms // 60000     # minute grouping ID
 
-        If bars arrive within the SAME minute:
-            ✓ update OHLC (no _i increment)
-        When a NEW minute arrives:
-            ✓ increment _i
-            ✓ roll A/B/C normally
-        """
-
-        minute_bucket = ts_ms // 60000
-
-        # first bar ever
-        if not hasattr(self, "_current_minute_bucket"):
-            self._current_minute_bucket = minute_bucket
-            self._A = None
-            self._B = None
-            self._C = dict(ts=ts_ms, o=o, h=h, l=l, c=c)
-            self._i = 1
+        # -------- FIRST BAR OF THE DAY --------
+        if self._current_minute_bucket is None:
+            self._current_minute_bucket = bucket
+            d = {"ts":ts_ms, "o":o, "h":h, "l":l, "c":c}
+            self._A = d
+            self._B = d.copy()
+            self._C = d.copy()   # ✅ Option B — initialized immediately
             return
 
-        
-        # intraminute update — update bar but continue evaluating (1-second alerts)
-        # intraminute update — update bar but continue evaluating (1-second alerts)
-        if minute_bucket == self._current_minute_bucket:
-            # update current C bar — do not roll minute
-            self._C["h"] = max(self._C["h"], h)
-            self._C["l"] = min(self._C["l"], l)
-            self._C["c"] = c
-            # continue evaluating using updated A/B/C
-            A = self._A
-            B = self._B
-            C = self._C
-        else:
-            # new minute — roll A -> B -> C
-            self._current_minute_bucket = minute_bucket
-            self._i += 1
-            A = self._A
-            B = self._B
-            C = dict(ts=ts_ms, o=o, h=h, l=l, c=c)
-            self._A = B
-            self._B = C
-            self._C = C
+        # -------- INTRAMINUTE UPDATE (same minute) --------
+        if bucket == self._current_minute_bucket:
+            self._A["h"] = max(self._A["h"], h)
+            self._A["l"] = min(self._A["l"], l)
+            self._A["c"] = c
+            return
 
-        # new minute
-        self._current_minute_bucket = minute_bucket
+        # -------- NEW MINUTE ARRIVED (roll A→B→C) --------
+        self._current_minute_bucket = bucket
         self._i += 1
 
-        A = self._A
-        B = self._B
-        C = dict(ts=ts_ms, o=o, h=h, l=l, c=c)
+        self._C = self._B.copy()
+        self._B = self._A.copy()
+        self._A = {"ts":ts_ms, "o":o, "h":h, "l":l, "c":c}
 
-        self._A = B
-        self._B = C
-        self._C = C
+        # -------- STRATEGY EVAL (entry only on new minute) --------
+        A,B,C = self._A, self._B, self._C
 
-        self._B = C
+        displacement = self._displacement(B["o"], B["h"], B["l"], B["c"])
+        sweep_hi = self._sweep_high(C["h"])
+        sweep_lo = self._sweep_low(C["l"])
+        in_window = _in_window(ts_ms)
+
+        if displacement >= SB_DISPLACEMENT/100 and in_window:
+            direction = "LONG" if sweep_lo else ("SHORT" if sweep_hi else None)
+            if direction:
+                price = C["c"]
+                sl = C["l"] if direction=="LONG" else C["h"]
+                tp = price + SB_TP_RR*(price-sl) if direction=="LONG" else price - SB_TP_RR*(sl-price)
+
+                payload = {
+                    "side": direction,
+                    "entry": float(price),
+                    "sl": float(sl),
+                    "tp": float(tp),
+                    "when": ts_ms,
+                    "label": "SB"
+                }
+                self._notify(payload)
+
+        return  # done
