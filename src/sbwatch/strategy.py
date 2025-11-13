@@ -41,7 +41,6 @@ WINDOW_END = _t(os.environ.get("WINDOW_END", "11:00"), dt.time(23, 59, 59))
 try:
     ET = ZoneInfo("America/New_York")
 except ZoneInfoNotFoundError:
-    # fallback: use system local tz or UTC if missing
     try:
         ET = ZoneInfo(os.environ.get("TZ", "UTC"))
     except Exception:
@@ -52,8 +51,7 @@ def _in_entry_window(ts_ms: int) -> bool:
     t = dt.datetime.fromtimestamp(ts_ms / 1000.0, tz=ET).time()
     return WINDOW_START <= t <= WINDOW_END
 
-# older code may refer to _in_window; alias for compatibility
-_in_window = _in_entry_window
+_in_window = _in_entry_window  # backwards compat
 
 def _iso(ts_ms: int) -> str:
     return dt.datetime.fromtimestamp(ts_ms / 1000.0, tz=ET).isoformat(timespec="seconds")
@@ -64,14 +62,15 @@ class SBEngine:
     Silver Bullet strategy engine (1-second friendly).
 
     Intraminute approach:
+
       - A represents the current-minute bar and is updated on every tick.
       - B represents the previous finished minute (bar i-1).
       - C represents bar i-2.
 
-    On each NEW minute, we reconstruct the original 1m triple (A0,B0,C0)
-    from three *completed* minutes and run the same FVG logic as the
-    pre-1s engine, so behavior matches the old 1m strategy as closely as
-    possible.
+    FVGs are created only on fully closed 1m candles (like the old engine),
+    but returns into those FVGs are checked *every tick* using the current
+    intraminute A-bar snapshot, so alerts go out immediately when the level
+    is first hit.
     """
 
     def __init__(self, levels: dict):
@@ -82,9 +81,9 @@ class SBEngine:
         self._i: int = 0  # synthetic "bar index" for SB_RET_MAX_BARS tracking
 
         # rolling 3-bar window (minute-level)
-        self._A: Optional[dict] = None
-        self._B: Optional[dict] = None
-        self._C: Optional[dict] = None
+        self._A: Optional[dict] = None  # current minute (intraminute-aggregated)
+        self._B: Optional[dict] = None  # prev finished minute
+        self._C: Optional[dict] = None  # prev-prev finished minute
 
         # last FVGs
         self._last_bull: Optional[dict] = None
@@ -113,7 +112,6 @@ class SBEngine:
             else:
                 self._notify = _notify_mod
         except Exception:
-            # fallback: provide a simple printer to avoid crashing in dev/test env
             def _fallback_notify(**kw):
                 print("[ENTRY-FAKE]", kw)
             self._notify = _fallback_notify
@@ -122,7 +120,7 @@ class SBEngine:
         """Resolve self._notify into a callable if possible (function or object.post_entry)."""
         try:
             if callable(self._notify):
-                self._notify_callable = self._notify  # direct callable
+                self._notify_callable = self._notify
             elif hasattr(self._notify, "post_entry") and callable(getattr(self._notify, "post_entry")):
                 self._notify_callable = getattr(self._notify, "post_entry")
             else:
@@ -133,7 +131,6 @@ class SBEngine:
     # ----- pre-10 internal swing tracking -----
 
     def _update_pre10(self, ts_ms: int, h: float, l: float):
-        """Collect pre-10 internal swing highs/lows (optional)."""
         if not INTERNAL_SWEEP_PRE10:
             return
         t = dt.datetime.fromtimestamp(ts_ms / 1000.0, tz=ET)
@@ -144,7 +141,6 @@ class SBEngine:
                 self._pre_lo = l
 
     def _swept_high(self, h: float) -> bool:
-        """Return True if h sweeps any configured high level (PDH, Asia, London or pre-10)."""
         L = self.levels
         return ((L.get("pdh") is not None and h > L.get("pdh")) or
                 (L.get("asia_high") is not None and h > L.get("asia_high")) or
@@ -152,7 +148,6 @@ class SBEngine:
                 (INTERNAL_SWEEP_PRE10 and self._pre_hi is not None and h > self._pre_hi))
 
     def _swept_low(self, l: float) -> bool:
-        """Return True if l sweeps any configured low level (PDL, Asia, London or pre-10)."""
         L = self.levels
         return ((L.get("pdl") is not None and l < L.get("pdl")) or
                 (L.get("asia_low") is not None and l < L.get("asia_low")) or
@@ -167,15 +162,9 @@ class SBEngine:
     # ----- robust posting to notify (works with multiple signatures) -----
 
     def _maybe_post(self, ts_ms: int, side: str, price: float, **extra):
-        """
-        Attempt to post an entry. This function is tolerant to different notify
-        signatures (function, object.post_entry, etc.) and normalizes payload.
-        """
-        # gate by time window
         if not _in_entry_window(ts_ms):
             return
 
-        # normalize payload like the old engine
         payload = dict(
             side=side.upper(),
             entry=float(price),
@@ -185,18 +174,15 @@ class SBEngine:
             when=ts_ms,
         )
 
-        # try resolved notify callable first
         if self._notify_callable is not None:
             try:
                 self._notify_callable(**payload)
                 return
             except TypeError:
-                # fall through to raw self._notify if signature mismatch
                 pass
             except Exception as e:
                 print("[SBEngine] notify callable failed:", e)
 
-        # fallback to raw self._notify if callable
         if callable(self._notify):
             try:
                 self._notify(**payload)
@@ -204,28 +190,51 @@ class SBEngine:
             except Exception as e:
                 print("[SBEngine] raw notify failed:", e)
 
-        # final fallback: print to stdout (dev environments)
         print("[ENTRY]", payload, "iso:", _iso(ts_ms))
 
-    # --------- main loop (1-second friendly, 1m-equivalent logic) ---------
+    # ----- shared return checker (used intraminute + on minute close) -----
+
+    def _check_returns(self, C: dict, swept_hi: bool, swept_lo: bool, current_index: int, ts_ms: int):
+        # LONG: return into last bull gap
+        if self._last_bull:
+            last = self._last_bull
+            if ((current_index - last["i"]) <= SB_RET_MAX_BARS
+                and C["l"] <= last["gap_top"] <= C["h"]
+                and swept_lo):
+                entry = last["gap_top"]
+                sl = (last.get("c1_low", last.get("gap_bot")) - SB_SL_BUFFER)
+                tp = entry + (entry - sl) * SB_TP_RR
+                self._maybe_post(ts_ms, "LONG", entry, sl=sl, tp=tp,
+                                 disp=last.get("disp"), mode=FVG_MODE)
+                self._last_bull = None
+
+        # SHORT: return into last bear gap
+        if self._last_bear:
+            last = self._last_bear
+            if ((current_index - last["i"]) <= SB_RET_MAX_BARS
+                and C["l"] <= last["gap_bot"] <= C["h"]
+                and swept_hi):
+                entry = last["gap_bot"]
+                sl = (last.get("c1_high", last.get("gap_top")) + SB_SL_BUFFER)
+                tp = entry - (sl - entry) * SB_TP_RR
+                self._maybe_post(ts_ms, "SHORT", entry, sl=sl, tp=tp,
+                                 disp=last.get("disp"), mode=FVG_MODE)
+                self._last_bear = None
+
+    # --------- main loop (1-second friendly, intraminute returns) ---------
 
     def on_bar(self, ts_ms: int, o: float, h: float, l: float, c: float):
         """
         Called with tick-level or bar-level OHLC updates.
 
-        Intraminute/minute behavior:
-
-          - First tick ever: initialize A/B/C from that bar and set minute bucket.
-          - If a tick arrives in the same minute bucket, expand A (high/low/close)
-            and update pre-10 swings, but do NOT run strategy evaluation.
-          - When a NEW minute bucket arrives, we:
-              * snapshot the completed rolling window (three finished minutes)
-              * run the original 1m SB logic on those completed bars
-              * then roll A->B->C forward and seed A with the new minute's first tick.
+        - New minute: build FVGs from three *completed* minutes and also check
+          returns on the completed bar (C0).
+        - Same minute: update A intraminute and check returns immediately
+          against the current A snapshot.
         """
         minute_bucket = ts_ms // 60000
 
-        # first bar/tick ever: initialize current minute bucket and all bars
+        # first tick ever
         if self._current_minute_bucket is None:
             self._current_minute_bucket = minute_bucket
             d = {"ts": ts_ms, "o": o, "h": h, "l": l, "c": c}
@@ -238,7 +247,7 @@ class SBEngine:
             self._update_pre10(ts_ms, h, l)
             return
 
-        # same-minute tick: update A in place (intraminute aggregation)
+        # -------- SAME-MINUTE TICK: intraminute returns --------
         if minute_bucket == self._current_minute_bucket:
             if self._A is None:
                 self._A = {"ts": ts_ms, "o": o, "h": h, "l": l, "c": c}
@@ -247,129 +256,93 @@ class SBEngine:
                 self._A["l"] = min(self._A.get("l", l), l)
                 self._A["c"] = c
                 self._A["ts"] = ts_ms
-            # maintain pre-10 swings off the live tick
+
             self._update_pre10(ts_ms, h, l)
+
+            # use current A snapshot as "C" for return purposes
+            C_intr = self._A
+            swept_hi = self._swept_high(C_intr["h"])
+            swept_lo = self._swept_low(C_intr["l"])
+
+            # treat this as the "next" bar index after the last completed one
+            current_index = self._i + 1 if self._i > 0 else 0
+            self._check_returns(C_intr, swept_hi, swept_lo, current_index, ts_ms)
             return
 
-        # -------- NEW minute arrived --------
-        # Snapshot the completed rolling window BEFORE we roll it forward.
+        # -------- NEW MINUTE: build FVGs + returns on completed bar --------
         prevA = self._A.copy() if self._A else {"ts": ts_ms, "o": o, "h": h, "l": l, "c": c}
         prevB = self._B.copy() if self._B else prevA.copy()
         prevC = self._C.copy() if self._C else prevB.copy()
 
-        # advance minute bucket and synthetic bar counter
         self._current_minute_bucket = minute_bucket
         self._i += 1
 
-        # Reconstruct the original 1m triple:
-        #   A0 = bar i-2, B0 = bar i-1, C0 = bar i  (all COMPLETED minutes)
+        # reconstruct original 1m triple: A0 (i-2), B0 (i-1), C0 (i)
         A0 = prevC
         B0 = prevB
         C0 = prevA
 
-        # maintain pre-10 swings using the completed bar C0 (matches old 1m behavior)
         self._update_pre10(C0["ts"], C0["h"], C0["l"])
 
-        # --- original SB FVG + displacement logic on completed minutes ---
-
-        # compute displacement reference
+        # --- FVG creation on completed minutes (same as old 1m behavior) ---
         disp_ref = None
         if FVG_MODE == "3C" and B0:
-            # 3C: displacement on middle candle (B0)
             disp_ref = self._displacement(B0["o"], B0["h"], B0["l"], B0["c"])
         elif FVG_MODE != "3C":
-            # 2C: displacement on latest candle (C0)
             disp_ref = self._displacement(C0["o"], C0["h"], C0["l"], C0["c"])
 
-        if disp_ref is None:
-            # roll window and seed new minute A, then stop
-            self._C = prevB
-            self._B = prevA
-            self._A = {"ts": ts_ms, "o": o, "h": h, "l": l, "c": c}
-            return
+        if disp_ref is not None:
+            disp_ok = disp_ref >= SB_DISPLACEMENT_MIN
 
-        disp_ok = disp_ref >= SB_DISPLACEMENT_MIN
+            if disp_ok:
+                if FVG_MODE == "3C" and A0:
+                    # bullish 3C FVG: C0.low > A0.high
+                    if (C0["l"] - A0["h"]) >= SB_FVG_MIN:
+                        self._last_bull = {
+                            "i": self._i,
+                            "gap_top": C0["l"],
+                            "gap_bot": A0["h"],
+                            "disp": disp_ref,
+                            "c1_low": A0["l"],
+                            "c1_high": A0["h"],
+                        }
+                    # bearish 3C FVG: A0.low > C0.high
+                    if (A0["l"] - C0["h"]) >= SB_FVG_MIN:
+                        self._last_bear = {
+                            "i": self._i,
+                            "gap_top": A0["l"],
+                            "gap_bot": C0["h"],
+                            "disp": disp_ref,
+                            "c1_low": A0["l"],
+                            "c1_high": A0["h"],
+                        }
+                elif FVG_MODE != "3C" and B0:
+                    # 2C variant: B0 acts as C1
+                    if (C0["l"] - B0["h"]) >= SB_FVG_MIN:
+                        self._last_bull = {
+                            "i": self._i,
+                            "gap_top": C0["l"],
+                            "gap_bot": B0["h"],
+                            "disp": disp_ref,
+                            "c1_low": B0["l"],
+                            "c1_high": B0["h"],
+                        }
+                    if (B0["l"] - C0["h"]) >= SB_FVG_MIN:
+                        self._last_bear = {
+                            "i": self._i,
+                            "gap_top": B0["l"],
+                            "gap_bot": C0["h"],
+                            "disp": disp_ref,
+                            "c1_low": B0["l"],
+                            "c1_high": B0["h"],
+                        }
 
-        # Build / refresh FVGs when displacement is OK (mirrors old 1m logic)
-        if disp_ok:
-            if FVG_MODE == "3C" and A0:
-                # bullish FVG: C0.low > A0.high (+gap size ≥ SB_FVG_MIN)
-                if (C0["l"] - A0["h"]) >= SB_FVG_MIN:
-                    # 3C: A0 is C1
-                    self._last_bull = {
-                        "i": self._i,
-                        "gap_top": C0["l"],
-                        "gap_bot": A0["h"],
-                        "disp": disp_ref,
-                        "c1_low": A0["l"],
-                        "c1_high": A0["h"],
-                    }
-                # bearish FVG: A0.low > C0.high
-                if (A0["l"] - C0["h"]) >= SB_FVG_MIN:
-                    # 3C: A0 is C1
-                    self._last_bear = {
-                        "i": self._i,
-                        "gap_top": A0["l"],
-                        "gap_bot": C0["h"],
-                        "disp": disp_ref,
-                        "c1_low": A0["l"],
-                        "c1_high": A0["h"],
-                    }
-            elif FVG_MODE != "3C" and B0:
-                # 2C variant: B0 acts like C1
-                if (C0["l"] - B0["h"]) >= SB_FVG_MIN:
-                    self._last_bull = {
-                        "i": self._i,
-                        "gap_top": C0["l"],
-                        "gap_bot": B0["h"],
-                        "disp": disp_ref,
-                        "c1_low": B0["l"],
-                        "c1_high": B0["h"],
-                    }
-                if (B0["l"] - C0["h"]) >= SB_FVG_MIN:
-                    self._last_bear = {
-                        "i": self._i,
-                        "gap_top": B0["l"],
-                        "gap_bot": C0["h"],
-                        "disp": disp_ref,
-                        "c1_low": B0["l"],
-                        "c1_high": B0["h"],
-                    }
-
-        # sweep checks on the completed bar C0 (same as old: sweeps use current bar)
+        # sweeps & returns on the completed bar C0 (minute-close behaviour)
         swept_hi = self._swept_high(C0["h"])
         swept_lo = self._swept_low(C0["l"])
+        self._check_returns(C0, swept_hi, swept_lo, self._i, C0["ts"])
 
-        # ---- returns into last FVGs (tightened so entry must be inside candle) ----
-
-        # LONG: return into last bull gap
-        if self._last_bull:
-            last = self._last_bull
-            if ((self._i - last["i"]) <= SB_RET_MAX_BARS
-                and C0["l"] <= last["gap_top"] <= C0["h"]
-                and swept_lo):
-                entry = last["gap_top"]
-                sl = (last.get("c1_low", last.get("gap_bot")) - SB_SL_BUFFER)
-                tp = entry + (entry - sl) * SB_TP_RR
-                # Use completed bar C0's timestamp (matches original 1m behavior)
-                self._maybe_post(C0["ts"], "LONG", entry, sl=sl, tp=tp,
-                                 disp=last.get("disp"), mode=FVG_MODE)
-                self._last_bull = None
-
-        # SHORT: return into last bear gap
-        if self._last_bear:
-            last = self._last_bear
-            if ((self._i - last["i"]) <= SB_RET_MAX_BARS
-                and C0["l"] <= last["gap_bot"] <= C0["h"]
-                and swept_hi):
-                entry = last["gap_bot"]
-                sl = (last.get("c1_high", last.get("gap_top")) + SB_SL_BUFFER)
-                tp = entry - (sl - entry) * SB_TP_RR
-                self._maybe_post(C0["ts"], "SHORT", entry, sl=sl, tp=tp,
-                                 disp=last.get("disp"), mode=FVG_MODE)
-                self._last_bear = None
-
-        # finally, roll window forward and seed A with the new minute's first tick
+        # roll window forward & seed A with new minute first tick
         self._C = prevB
         self._B = prevA
         self._A = {"ts": ts_ms, "o": o, "h": h, "l": l, "c": c}
