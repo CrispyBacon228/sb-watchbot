@@ -340,7 +340,9 @@ class SBEngine:
         # sweeps & returns on the completed bar C0 (minute-close behaviour)
         swept_hi = self._swept_high(C0["h"])
         swept_lo = self._swept_low(C0["l"])
-        self._check_returns(C0, swept_hi, swept_lo, self._i, C0["ts"])
+        # MINUTE-CLOSE RETURNS DISABLED
+
+        # self._check_returns(C0, swept_hi, swept_lo, self._i, C0["ts"])
 
         # roll window forward & seed A with new minute first tick
         self._C = prevB
