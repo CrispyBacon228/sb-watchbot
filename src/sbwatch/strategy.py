@@ -33,6 +33,7 @@ FVG_MODE = os.environ.get("FVG_MODE", "3C").upper()          # "3C" or "2C"
 SB_FVG_MIN = _f("SB_FVG_MIN", 0.15)                          # points
 SB_DISPLACEMENT_MIN = _f("SB_DISPLACEMENT_MIN", 0.30)        # body/range ratio threshold (0..1)
 SB_RET_MAX_BARS = _i("SB_RET_MAX_BARS", 20)
+SB_INTRAMINUTE_DELAY_MS = _i("SB_INTRAMINUTE_DELAY_MS", 0)  # ms into the minute before intraminute returns are allowed
 INTERNAL_SWEEP_PRE10 = _b("INTERNAL_SWEEP_PRE10", "1")
 WINDOW_START = _t(os.environ.get("WINDOW_START", "10:00"), dt.time(0, 0))
 WINDOW_END = _t(os.environ.get("WINDOW_END", "11:00"), dt.time(23, 59, 59))
@@ -258,6 +259,12 @@ class SBEngine:
                 self._A["ts"] = ts_ms
 
             self._update_pre10(ts_ms, h, l)
+
+            # NEW — intraminute delay to mimic 1m candle formation
+            if SB_INTRAMINUTE_DELAY_MS > 0:
+                offset_ms = ts_ms - (minute_bucket * 60000)
+                if offset_ms < SB_INTRAMINUTE_DELAY_MS:
+                    return
 
             # use current A snapshot as "C" for return purposes
             C_intr = self._A

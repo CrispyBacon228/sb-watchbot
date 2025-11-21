@@ -118,7 +118,7 @@ def post_entry(side: str, entry: float, sl: float, tp: Optional[float], sweep_la
                when: Optional[Union[int,float,str,datetime]]=None) -> None:
     # 🟩 SB-ENTRY (10:03:00 ET) LONG — sweep of ASIA LOW Entry 101.25 | SL 99.85 | TP~25113.25
     side_txt = "LONG" if str(side).lower().startswith("l") else "SHORT"
-    t  = _fmt_et(when, seconds=True)
+    t  = _fmt_et(datetime.now(timezone.utc), seconds=True)
     es = _fmt_price(entry); sls=_fmt_price(sl); tps=_fmt_price(tp) if tp is not None else "—"
     post_discord(f"🟩 SB-ENTRY ({t}) {side_txt} — sweep of {sweep_label} Entry {es} | SL {sls} | TP~{tps}")
     
